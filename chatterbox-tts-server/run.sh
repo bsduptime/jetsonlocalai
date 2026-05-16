@@ -9,9 +9,9 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 VENV=/mnt/sdcard/videngine/venv
-if [ ! -x "$VENV/bin/uvicorn" ]; then
+if [ ! -x "$VENV/bin/python" ]; then
   echo "error: videngine venv not found at $VENV"
-  echo "  expected: $VENV/bin/uvicorn"
+  echo "  expected: $VENV/bin/python"
   exit 1
 fi
 
@@ -37,4 +37,7 @@ chatterbox-tts-server starting on ${HOST}:${PORT}
 First request will warm CUDA (~5-10s). Subsequent requests are fast.
 EOF
 
-exec "$VENV/bin/uvicorn" server:app --host "$HOST" --port "$PORT"
+# Invoke uvicorn via the venv's python (not the bin/uvicorn shebang) — that
+# way we're guaranteed to use the videngine venv's site-packages, not whatever
+# Python the uvicorn shebang happens to point at on this machine.
+exec "$VENV/bin/python" -m uvicorn server:app --host "$HOST" --port "$PORT"

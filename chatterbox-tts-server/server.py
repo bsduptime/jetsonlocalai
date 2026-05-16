@@ -18,7 +18,19 @@ from pathlib import Path
 
 import soundfile as sf
 import torch
-from chatterbox.tts import ChatterboxTTS
+
+# Known chatterbox-tts issue: PerthImplicitWatermarker import can resolve to
+# None on some installs. Fall back to the no-op DummyWatermarker. This matches
+# the workaround in content/videngine/src/videngine/stages/intro_outro.py.
+try:
+    import perth
+
+    if getattr(perth, "PerthImplicitWatermarker", None) is None:
+        perth.PerthImplicitWatermarker = perth.DummyWatermarker  # type: ignore[attr-defined]
+except ImportError:
+    pass
+
+from chatterbox.tts import ChatterboxTTS  # noqa: E402  — must follow perth shim
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel
