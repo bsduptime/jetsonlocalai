@@ -21,6 +21,14 @@ Candidates being designed (see the parent project notes — not yet shipped):
 - **`voice-pipeline-host/`** — "home Jarvis" host stack: Home Assistant + Wyoming + faster-whisper STT + Piper/Kokoro TTS + voice satellites (ESPHome). Pair with a button on your phone or room mics.
 - **`backups/`** — restic / rsync recipes for per-user writable folders, off-Jetson destination (Backblaze B2, Hetzner Storage Box, etc.).
 
+### Already running on the Jetson (not in this repo)
+
+These services live elsewhere but are part of the same hardware story:
+
+- **videngine TTS** (Chatterbox-based, multi-voice, OpenAI-compatible-ish) — hosted at `192.168.1.200:18080`, lives in the content repo. Serves both videngine narration and Mac voice-replies from a single process (one CUDA context per Jetson is the safe pattern — see the [Jetson rule memory](https://github.com/bsduptime/maclocalai#about) / `feedback_jetson_one_cuda_process`). The Mac client in [`maclocalai/voice-replies/`](https://github.com/bsduptime/maclocalai/tree/main/voice-replies) talks to it.
+- **dbexpertise embedding server** (BGE-M3) — for the dbexpert.ai RAG pipeline.
+- **ComfyUI** (Flux Schnell) — content pipeline image generation.
+
 ## Requirements
 
 - **NVIDIA Jetson Orin AGX** (other Orin models may work for lighter stacks; documented per-stack)
