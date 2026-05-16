@@ -11,6 +11,41 @@ Chatterbox produces high-quality, expressive voice (beats ElevenLabs in blind te
 - Jetson Orin AGX with the existing `videngine` venv at `/mnt/sdcard/videngine/venv` (already has torch with CUDA, chatterbox-tts, fastapi, uvicorn). No new installs needed.
 - Chatterbox model weights cached at `/mnt/sdcard/.cache/huggingface/hub/models--ResembleAI--chatterbox` (already downloaded by videngine).
 - Tailscale running on the Jetson if you want remote access.
+- **`setuptools<81` pinned in the venv** (videngine's `setup-jetson.sh` does this). Newer setuptools silently breaks perth — `perth.PerthImplicitWatermarker` ends up `None` and chatterbox crashes on init with a confusing `TypeError`. The pin is the real fix; the DummyWatermarker monkey-patch in `server.py` is a belt-and-suspenders fallback for venvs where the pin slipped.
+
+## Performance on Jetson Orin AGX (CUDA)
+
+Measured by David against the videngine venv:
+
+- **Cold model load**: ~16 s
+- **Generation**: ~6-8 s per short line (1-2 s of audio). Sampling caps at 1000 tokens.
+- **Output sample rate**: 24000 Hz (`model.sr`). Resample with `ffmpeg -ar 22050` if mixing into a 22050 Hz pipeline.
+
+## Voice profiles — what already exists, what to add
+
+Existing reference clips (David's voice — for content pipeline narration, **not** Claude responses):
+
+```
+content/videngine/voice-profiles/samples/
+  steady.wav
+  drive.wav
+  reflective-calm.wav
+  …
+```
+
+To add a **new** voice (e.g. `claude-assistant`):
+
+- 12 s of clean speech, mono, 22050 Hz WAV, no music, no reverb.
+- For long source recordings, use `content/videngine/scripts/make_voice_profiles.py` — it extracts the best 12s segment automatically.
+- Drop the resulting WAV into this stack's `voices/` folder; the filename stem becomes the voice name in API calls.
+
+## Reproducibility note
+
+Generation is **non-deterministic** — same text + same reference produces different cadence each run. If you need stability (regression tests, audio mixing alignment), set `torch.manual_seed(N)` before `.generate()`.
+
+## Reference integration
+
+`content/videngine/src/videngine/stages/intro_outro.py` is the proven Chatterbox integration — wraps load + generate + save behind config. Look there for any "how do they do X" question before reinventing.
 
 ## Run it
 
