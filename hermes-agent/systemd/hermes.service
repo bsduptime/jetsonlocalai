@@ -1,0 +1,105 @@
+[Unit]
+# Hermes Agent — personal assistant gateway (messaging + cron + sessions).
+# Hardened system unit running as the dedicated `hermes` user with
+# filesystem sandboxing. See hermes-agent/README.md for the full security
+# model and rationale.
+Description=Hermes Agent gateway (hardened, user=hermes)
+Documentation=https://github.com/NousResearch/hermes-agent
+Documentation=file:///home/dbexpertai/code/jetsonlocalai/hermes-agent/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=hermes
+Group=hermes
+WorkingDirectory=/home/hermes/.hermes
+
+# PATH must include /home/hermes/.local/bin so the hermes CLI resolves.
+# Also includes /home/dbexpertai/.npm-global/bin so the shared `claude` CLI
+# (Claude Code) is reachable — that path is bind-mounted read-only below.
+Environment="PATH=/home/hermes/.local/bin:/home/dbexpertai/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="HOME=/home/hermes"
+Environment="HERMES_HOME=/home/hermes/.hermes"
+
+ExecStart=/home/hermes/.local/bin/hermes gateway run
+
+Restart=on-failure
+RestartSec=10
+# Hermes' gateway needs up to 180s to drain in-flight messages cleanly on
+# shutdown (channel polls, agent loops mid-iteration). Give it 240s so
+# systemd never SIGKILLs mid-drain.
+TimeoutStopSec=240
+
+# ============================================================================
+# Filesystem isolation — the big security win.
+# ============================================================================
+# ProtectHome=tmpfs mounts an empty tmpfs over /home from this process's
+# point of view. Then we BindPaths only what hermes actually needs back in.
+# Effect: /home/dbexpertai/.ssh, .codex, .gnupg, browser cookies, gh tokens
+# — none of them exist in this process's filesystem namespace. Not just
+# permission-denied; literally absent.
+ProtectHome=tmpfs
+BindPaths=/home/hermes
+# Code dir — hermes needs r/w here to orchestrate dev work (via Claude Code)
+BindPaths=/home/dbexpertai/code
+# Claude credentials — shared READ-ONLY so hermes can `claude login`-equivalent
+# but cannot modify or exfiltrate the credentials file from inside the sandbox.
+# Note: the actual filename is `.credentials.json` (leading dot), not the
+# conventional `credentials.json`. The `-` prefix makes the bind optional —
+# if dbexpertai hasn't done `claude login` yet, the unit starts anyway
+# without Claude access (rather than failing with 226/NAMESPACE).
+BindReadOnlyPaths=-/home/dbexpertai/.claude/.credentials.json:/home/hermes/.claude/.credentials.json
+
+# Claude Code CLI install — shared READ-ONLY so hermes can invoke `claude`.
+# We bind in the whole .npm-global so future claude updates done by
+# dbexpertai (npm install -g) flow through automatically. Read-only means
+# hermes can't tamper with the install itself.
+BindReadOnlyPaths=-/home/dbexpertai/.npm-global
+
+# /usr, /etc, /boot read-only. We explicitly allow writes only where needed.
+ProtectSystem=strict
+ReadWritePaths=/home/hermes /home/dbexpertai/code
+
+# Private /tmp namespace so hermes can't see / can't poison other processes' tmp files
+PrivateTmp=true
+
+# ============================================================================
+# Kernel surface hardening — cheap, safe defaults.
+# ============================================================================
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+
+# ============================================================================
+# Privilege boundaries.
+# ============================================================================
+NoNewPrivileges=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true
+# No capabilities at all — hermes user shouldn't need any.
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# ============================================================================
+# Network — allow IP + Unix sockets only. Blocks raw sockets / packet sniffing.
+# AF_INET6 included for IPv6; AF_UNIX for local sockets (e.g. systemd journal).
+# Note: we do NOT block outbound generally — Hermes needs HTTPS for OAuth,
+# MCP servers, channel polling, OpenAI Codex inference. Outbound traffic is
+# captured by the cron snapshotter for review (see monitoring/hermes-watch.sh).
+# ============================================================================
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+# ============================================================================
+# OOM priority — sit between bge-m3 (warm, default 0) and ComfyUI (-200).
+# Same -50 as a "personal infra, kill before content pipeline but after
+# embeddings" tier.
+# ============================================================================
+OOMScoreAdjust=-50
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,39 @@
+# Hermes Agent — audit tripwires.
+# Installed to /etc/audit/rules.d/50-hermes.rules by setup-phase2.sh.
+# Reload with: sudo augenrules --load
+#
+# What's watched (and why):
+#   1. dbexpertai's SSH keys — hermes should NEVER read these. Any access
+#      means either misconfiguration or compromise.
+#   2. dbexpertai's Codex auth — copied once into /home/hermes during Phase 1;
+#      any read of the original by anything other than dbexpertai is suspect.
+#   3. Claude credentials — bind-mounted read-only into hermes' namespace.
+#      We watch for WRITE attempts specifically (read is expected & legitimate).
+#   4. setuid/setgid bit changes — common privilege-escalation primitive.
+#
+# Audit logs land in /var/log/audit/audit.log (root-readable only). Hermes
+# user cannot read or tamper with them.
+
+# --- SSH keys (hermes should never touch these) ---
+-w /home/dbexpertai/.ssh/ -p rwa -k hermes-ssh-access
+
+# --- Codex auth (sensitive OAuth token) ---
+-w /home/dbexpertai/.codex/ -p rwa -k hermes-codex-access
+
+# --- Claude credentials — WRITE only (read is expected via bind-mount) ---
+# Filename is `.credentials.json` (leading dot) — not the conventional name.
+-w /home/dbexpertai/.claude/.credentials.json -p wa -k hermes-claude-write
+
+# --- gh CLI credentials (GitHub token) ---
+-w /home/dbexpertai/.config/gh/ -p rwa -k hermes-gh-access
+
+# --- setuid/setgid bit changes (escalation primitive) ---
+# On aarch64 (Jetson), `chmod` is not a direct syscall — glibc's chmod()
+# translates to fchmodat(AT_FDCWD, ...). So we only watch fchmod and
+# fchmodat. Argument positions differ between the two:
+#   fchmod(fd, mode)                — mode is a1
+#   fchmodat(dirfd, path, mode, flag) — mode is a2
+-a always,exit -F arch=b64 -S fchmod   -F a1&04000 -k setuid-set
+-a always,exit -F arch=b64 -S fchmod   -F a1&02000 -k setgid-set
+-a always,exit -F arch=b64 -S fchmodat -F a2&04000 -k setuid-set
+-a always,exit -F arch=b64 -S fchmodat -F a2&02000 -k setgid-set
