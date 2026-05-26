@@ -1,0 +1,10 @@
+name: mailer
+version: 0.1.0
+description: |
+  Send emails to pre-approved contacts. Per-recipient daily rate limit enforced
+  by the tool (not by the model). Attachments restricted to PDF, Markdown,
+  images, audio, and CSV. Dry-run is the default — flip EMAIL_DRY_RUN=false
+  in email-plugin/.env to send for real via Resend or SMTP.
+author: David Klippel
+provides_tools:
+  - send_email

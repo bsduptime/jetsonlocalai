@@ -5,3 +5,9 @@
 .vscode/
 __pycache__/
 *.pyc
+
+# mailer plugin runtime (real config + state never in repo)
+hermes-agent/plugins/mailer/.env
+hermes-agent/plugins/mailer/allowlist.yaml
+hermes-agent/plugins/mailer/state/
+
