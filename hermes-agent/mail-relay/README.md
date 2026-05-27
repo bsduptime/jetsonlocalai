@@ -43,9 +43,14 @@ The setup script:
 
 After install, edit `/etc/hermes-mailer/.env` to pick a transport and
 add credentials, plus `/etc/hermes-mailer/allowlist.yaml` to add
-contacts. **No daemon restart needed** — allowlist reloads per request
-and `.env` is read on each tool invocation (via the systemd unit's
-Environment block + the daemon's process env).
+contacts.
+
+**Reload semantics:**
+- `allowlist.yaml` reloads **per request** (read-from-disk every call, with
+  last-known-good cache against in-flight edits) — no restart needed.
+- `.env` is read **once at daemon start**, so changes to transport,
+  credentials, EMAIL_DRY_RUN, EMAIL_FROM etc. need
+  `sudo systemctl restart hermes-mailer` to take effect.
 
 Then restart hermes so the new (thin-client) plugin picks up:
 

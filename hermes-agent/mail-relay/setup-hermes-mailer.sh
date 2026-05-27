@@ -123,6 +123,15 @@ step "4/7: Seed /etc/hermes-mailer/.env and allowlist.yaml (if missing)"
 # Mode 0640 on files means group can read but not write; David edits via
 # a per-file ACL.
 install -d -o root -g hermes-mailer-config -m 750 /etc/hermes-mailer
+# DIRECTORY-LEVEL ACL: a per-file ACL on .env/allowlist.yaml is useless if
+# dbexpertai can't even traverse INTO /etc/hermes-mailer/. The dir is
+# 0750 root:hermes-mailer-config; without an ACL, dbexpertai gets nothing
+# (the "other" bits are 0). Grant rx so david can `cd` in and `ls`, plus
+# a DEFAULT ACL so future files in here inherit his access.
+if command -v setfacl >/dev/null; then
+    setfacl -m u:dbexpertai:rx /etc/hermes-mailer
+    setfacl -d -m u:dbexpertai:rx /etc/hermes-mailer
+fi
 ENV_FILE=/etc/hermes-mailer/.env
 ALLOW_FILE=/etc/hermes-mailer/allowlist.yaml
 
