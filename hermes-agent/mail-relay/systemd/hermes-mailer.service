@@ -1,0 +1,112 @@
+[Unit]
+# hermes-mailer — privilege-separated email broker for Hermes Agent and
+# (future) other local agents. Holds the Resend / SMTP credentials and
+# enforces per-caller allowlist + daily rate limit. Hermes' mailer plugin
+# talks to this daemon over a Unix socket and never sees the credentials.
+# See hermes-agent/mail-relay/PROTOCOL.md for the design contract.
+Description=hermes-mailer (privilege-separated email broker)
+Documentation=file:///home/dbexpertai/code/jetsonlocalai/hermes-agent/mail-relay/PROTOCOL.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# ============================================================================
+# DynamicUser: systemd creates a transient `hermes-mailer` user at start
+# and tears it down on stop. No persistent UID, no /etc/passwd entry, no
+# login shell. The user owns the process; the credential files at
+# /etc/hermes-mailer/ have an ACL that makes them readable by this dynamic
+# user via the supplementary group set below.
+# ============================================================================
+DynamicUser=yes
+# Supplementary groups:
+#   hermes-mailer-clients : the daemon owns this group's group-id on the
+#                            UDS so members (hermes user) can connect().
+#   hermes-mailer-config  : grants the daemon READ access to /etc/hermes-mailer/
+#                            files (mode 0640 root:hermes-mailer-config).
+# The hermes user is in clients but NOT in config — she can talk to the
+# socket but cannot read the API key.
+SupplementaryGroups=hermes-mailer-clients hermes-mailer-config
+
+# /etc/hermes-mailer/ — credentials + allowlist. World-unreadable; the
+# dynamic user gets read access via an ACL set by the setup script.
+ConfigurationDirectory=hermes-mailer
+ConfigurationDirectoryMode=0750
+
+# /var/lib/hermes-mailer/ — DB + audit log + dry-run dumps.
+StateDirectory=hermes-mailer
+StateDirectoryMode=0700
+
+# /run/hermes-mailer/ — UDS socket lives here.
+RuntimeDirectory=hermes-mailer
+RuntimeDirectoryMode=0750
+
+# Working dir + env.
+WorkingDirectory=%S/hermes-mailer
+Environment="HERMES_MAILER_CONFIG_DIR=/etc/hermes-mailer"
+Environment="HERMES_MAILER_STATE_DIR=/var/lib/hermes-mailer"
+Environment="HERMES_MAILER_RUNTIME_DIR=/run/hermes-mailer"
+Environment="HERMES_MAILER_LOG_LEVEL=INFO"
+# Python path: where the hermes_mailer package lives. Set by the install
+# script when it symlinks the code into a stable location.
+Environment="PYTHONPATH=/usr/local/lib/hermes-mailer"
+
+ExecStart=/usr/bin/python3 -m hermes_mailer.daemon
+
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=60
+
+# ============================================================================
+# Filesystem isolation
+# ============================================================================
+# /home is invisible to this process — the daemon has no reason to ever
+# touch home directories. Combined with ProtectSystem=strict, the only
+# writable paths are the StateDirectory + RuntimeDirectory.
+ProtectHome=yes
+ProtectSystem=strict
+ReadOnlyPaths=/etc/hermes-mailer /usr/local/lib/hermes-mailer
+PrivateTmp=true
+PrivateDevices=true
+
+# ============================================================================
+# Kernel + privilege hardening
+# ============================================================================
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+
+NoNewPrivileges=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictNamespaces=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# Network: AF_INET / INET6 for Resend HTTPS + SMTP egress; AF_UNIX for
+# the UDS we accept on. No raw sockets, no packet sniffing.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+# Syscall filter: block esoteric stuff the daemon should never need.
+SystemCallFilter=@system-service
+SystemCallFilter=~@mount @debug @cpu-emulation @obsolete @raw-io @reboot @swap
+SystemCallErrorNumber=EPERM
+
+# Memory + CPU bounds. Sized to accommodate worst-case:
+#   MAX_CONCURRENT=4 conns × (~36 MiB request + ~27 MiB decoded base64 +
+#   ~27 MiB validated bytes) ≈ 360 MiB peak. 512M gives headroom for
+#   Python interpreter + transport buffers.
+MemoryMax=512M
+TasksMax=32
+
+# Bigger OOM penalty than hermes itself: this daemon is auxiliary, kill
+# it before Elena.
+OOMScoreAdjust=200
+
+[Install]
+WantedBy=multi-user.target

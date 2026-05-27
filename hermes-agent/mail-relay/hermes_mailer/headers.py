@@ -1,12 +1,12 @@
 """Central RFC validation for header-bearing fields.
 
-Used for `to`, `from`, `reply_to`, `subject` on every send, regardless of
-transport. The Resend SDK does NOT go through email.message.EmailMessage so
-we cannot rely on EmailMessage's own validation; we re-implement the strict
-bits ourselves and apply them uniformly.
+Same logic as the plugin's headers.py (verbatim, except it now lives in
+the daemon). Used for `to`, `from`, `reply_to`, `subject` regardless of
+transport. The Resend SDK does NOT go through email.message.EmailMessage
+so we re-implement the strict bits ourselves and apply them uniformly.
 
-Reject:
-  - CR / LF in any field (the SMTP header-injection classic).
+Rejects:
+  - CR / LF in any field (SMTP header-injection).
   - NUL bytes.
   - Addresses without `@`.
   - Display-name forms in the `to` argument (the agent must pass a bare addr).
@@ -20,10 +20,6 @@ from email.utils import parseaddr
 
 from .errors import InvalidInput
 
-# Permissive RFC-5321-ish address regex. Not full RFC 5322 — we want to
-# allow normal addresses (incl. plus-tags, internal dots) and reject obvious
-# garbage. Local part is a dot-separated sequence of atoms: no leading/
-# trailing dot, no consecutive dots.
 _LOCAL_ATOM = r"[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+"
 _LOCAL = rf"{_LOCAL_ATOM}(\.{_LOCAL_ATOM})*"
 _DOMAIN_LABEL = r"[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
@@ -35,21 +31,14 @@ def _has_control(s: str) -> bool:
     return any(ch in s for ch in ("\r", "\n", "\x00"))
 
 
-def validate_address_field(field_name: str, raw: str | None, *, allow_display_name: bool) -> str:
-    """Validate `from`, `reply_to`, or `to`.
-
-    `allow_display_name=False` is used for `to` — the agent passes a bare
-    address. `allow_display_name=True` is used for `from`/`reply_to`, which
-    come from operator-controlled .env and may carry a Name <addr> form.
-
-    Returns the validated string suitable for use as a header / API field.
-    """
+def validate_address_field(field_name: str, raw, *, allow_display_name: bool) -> str:
     if raw is None or not str(raw).strip():
         raise InvalidInput("missing_field", field_name)
-    raw = str(raw)
+    if not isinstance(raw, str):
+        raise InvalidInput("invalid_field_type", field_name)
     if _has_control(raw):
         raise InvalidInput("header_injection", field_name)
-    if len(raw) > 320:  # RFC 5321 max forward-path length, generous
+    if len(raw) > 320:
         raise InvalidInput("field_too_long", field_name)
     name, addr = parseaddr(raw)
     if not addr or "@" not in addr:
@@ -64,7 +53,6 @@ def validate_address_field(field_name: str, raw: str | None, *, allow_display_na
 
 
 def address_only(validated_field: str) -> str:
-    """Extract the bare address from a validated `Name <addr>` form."""
     _, addr = parseaddr(validated_field)
     return addr.lower()
 

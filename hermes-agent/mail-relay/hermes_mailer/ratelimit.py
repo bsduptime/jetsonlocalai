@@ -1,18 +1,13 @@
-"""SQLite-backed rate limiter with reservation pattern.
+"""SQLite-backed rate limiter, caller-keyed.
 
-Statuses (Codex Finding 1 — distinguish transport failure modes):
-  - reserved          : INSERTed, transport not yet called. Counts (while fresh).
-  - sent              : transport confirmed acceptance. Counts.
-  - dry_run           : dry-run path. Does NOT count.
-  - failed_pre_send   : transport rejected before bytes left host. Does NOT count.
-  - unknown_post_send : transport call started, outcome unknown. Counts (conservative).
+Lifted from the plugin's ratelimit.py with one schema change: `caller` is
+now a NOT NULL column on every row, and the count query filters by
+(caller, recipient, local_day, status).
 
-The reservation pattern (BEGIN IMMEDIATE inside a single transaction) gives
-us atomic check-and-insert so even if Hermes ever runs tool calls in
-parallel (it doesn't today, but future-proofing is cheap), we don't oversend.
-
-Stale `reserved` rows older than RESERVATION_TTL_SECONDS are reclassified to
-`unknown_post_send` at plugin load time (and on first call of the day).
+Same reservation pattern (BEGIN IMMEDIATE + INSERT reserved + check
+count + send + UPDATE) so concurrent connects to the daemon don't
+oversend even within a single caller, and don't cross-pollinate across
+callers.
 """
 
 from __future__ import annotations
@@ -33,6 +28,7 @@ _init_lock = threading.Lock()
 @dataclass
 class Reservation:
     row_id: int
+    caller: str
     recipient: str
     local_day: str
     limit: int
@@ -55,6 +51,7 @@ def init_schema(db_path: Path) -> None:
                 """
                 CREATE TABLE IF NOT EXISTS sends (
                     id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                    caller           TEXT    NOT NULL,
                     recipient        TEXT    NOT NULL,
                     reserved_at_utc  TEXT    NOT NULL,
                     finalized_at_utc TEXT,
@@ -63,10 +60,11 @@ def init_schema(db_path: Path) -> None:
                     message_id       TEXT,
                     subject_trunc    TEXT,
                     byte_size        INTEGER,
-                    attachment_count INTEGER DEFAULT 0
+                    attachment_count INTEGER DEFAULT 0,
+                    request_id       TEXT
                 );
-                CREATE INDEX IF NOT EXISTS idx_sends_recipient_day_status
-                    ON sends(recipient, local_day, status);
+                CREATE INDEX IF NOT EXISTS idx_sends_caller_recipient_day_status
+                    ON sends(caller, recipient, local_day, status);
                 CREATE INDEX IF NOT EXISTS idx_sends_status_reserved_at
                     ON sends(status, reserved_at_utc);
                 """
@@ -76,15 +74,12 @@ def init_schema(db_path: Path) -> None:
             conn.close()
 
 
-def _resolve_tz(tz_name: str) -> ZoneInfo | timezone:
+def _resolve_tz(tz_name: str):
     if tz_name == "local" or not tz_name:
-        # Use the local zone via the LOCAL_TZ env or system. Python's
-        # datetime.now().astimezone() uses the system local tz; we'll lean on that.
-        return None  # type: ignore[return-value]  (sentinel — caller handles)
+        return None
     try:
         return ZoneInfo(tz_name)
     except ZoneInfoNotFoundError:
-        # Fall back to UTC if config is bad rather than crashing.
         return timezone.utc
 
 
@@ -107,18 +102,12 @@ def next_midnight_iso(tz_name: str) -> str:
 
 
 def reap_stale_reservations(db_path: Path, ttl_seconds: int) -> int:
-    """Reclassify any `reserved` rows older than ttl → `unknown_post_send`.
-
-    Returns the number of rows reaped. Called at plugin load and (optionally)
-    before each reserve to prevent stale rows from accumulating.
-    """
     cutoff = (datetime.now(timezone.utc) - timedelta(seconds=ttl_seconds)).isoformat(timespec="seconds")
     conn = _connect(db_path)
     try:
         with conn:
             cur = conn.execute(
-                "UPDATE sends SET status='unknown_post_send', "
-                "finalized_at_utc=? "
+                "UPDATE sends SET status='unknown_post_send', finalized_at_utc=? "
                 "WHERE status='reserved' AND reserved_at_utc < ?",
                 (datetime.now(timezone.utc).isoformat(timespec="seconds"), cutoff),
             )
@@ -127,14 +116,15 @@ def reap_stale_reservations(db_path: Path, ttl_seconds: int) -> int:
         conn.close()
 
 
-def count_today(db_path: Path, recipient: str, local_day: str) -> int:
-    """Count rows that consume the daily quota for (recipient, day)."""
+def count_today(db_path: Path, *, caller: str, recipient: str,
+                local_day: str) -> int:
     conn = _connect(db_path)
     try:
         cur = conn.execute(
-            f"SELECT count(*) FROM sends WHERE recipient=? AND local_day=? "
+            f"SELECT count(*) FROM sends "
+            f"WHERE caller=? AND recipient=? AND local_day=? "
             f"AND status IN ({','.join('?' * len(_COUNTED_STATUSES))})",
-            (recipient.lower(), local_day, *_COUNTED_STATUSES),
+            (caller, recipient.lower(), local_day, *_COUNTED_STATUSES),
         )
         return cur.fetchone()[0]
     finally:
@@ -145,52 +135,43 @@ def count_today(db_path: Path, recipient: str, local_day: str) -> int:
 def reserve(
     db_path: Path,
     *,
+    caller: str,
     recipient: str,
     limit: int,
     local_day: str,
     subject_trunc: str,
     byte_size: int,
     attachment_count: int,
+    request_id: str,
     ttl_seconds: int,
 ):
-    """Context manager that atomically reserves a slot.
-
-    Yields (Reservation, count_after_insert) on success.
-    Raises RateLimitExceeded if the recipient is at or above their limit.
-
-    The caller MUST call finalize_*() on the yielded reservation.
-    If the caller's block raises and they did not finalize, the reservation
-    is left as `reserved` and will be reaped at the next startup or
-    before the next reserve. (We can't reliably finalize on exception here
-    without knowing whether the send actually happened.)
-    """
-    # Opportunistic reap so we don't compete with our own stale rows.
     reap_stale_reservations(db_path, ttl_seconds)
-
     recipient_lc = recipient.lower()
     conn = _connect(db_path)
     try:
-        conn.isolation_level = None  # manual txn control
+        conn.isolation_level = None
         conn.execute("BEGIN IMMEDIATE")
         try:
             count = conn.execute(
-                f"SELECT count(*) FROM sends WHERE recipient=? AND local_day=? "
+                f"SELECT count(*) FROM sends "
+                f"WHERE caller=? AND recipient=? AND local_day=? "
                 f"AND status IN ({','.join('?' * len(_COUNTED_STATUSES))})",
-                (recipient_lc, local_day, *_COUNTED_STATUSES),
+                (caller, recipient_lc, local_day, *_COUNTED_STATUSES),
             ).fetchone()[0]
             if count >= limit:
                 conn.execute("ROLLBACK")
                 raise RateLimitExceeded(
-                    recipient=recipient_lc, limit=limit, sent_today=count
+                    caller=caller, recipient=recipient_lc,
+                    limit=limit, sent_today=count,
                 )
             now_utc = datetime.now(timezone.utc).isoformat(timespec="seconds")
             cur = conn.execute(
                 "INSERT INTO sends "
-                "(recipient, reserved_at_utc, local_day, status, "
-                " subject_trunc, byte_size, attachment_count) "
-                "VALUES (?, ?, ?, 'reserved', ?, ?, ?)",
-                (recipient_lc, now_utc, local_day, subject_trunc,
-                 byte_size, attachment_count),
+                "(caller, recipient, reserved_at_utc, local_day, status, "
+                " subject_trunc, byte_size, attachment_count, request_id) "
+                "VALUES (?, ?, ?, ?, 'reserved', ?, ?, ?, ?)",
+                (caller, recipient_lc, now_utc, local_day, subject_trunc,
+                 byte_size, attachment_count, request_id),
             )
             row_id = cur.lastrowid
             conn.execute("COMMIT")
@@ -204,24 +185,14 @@ def reserve(
             raise
     finally:
         conn.close()
+    yield Reservation(
+        row_id=row_id, caller=caller, recipient=recipient_lc,
+        local_day=local_day, limit=limit,
+    )
 
-    yield Reservation(row_id=row_id, recipient=recipient_lc,
-                      local_day=local_day, limit=limit)
 
-
-def finalize(
-    db_path: Path,
-    reservation: Reservation,
-    new_status: str,
-    message_id: str | None = None,
-) -> int:
-    """Update the reservation row. Returns rowcount.
-
-    If rowcount==0, the row was already reaped (TTL elapsed during a slow
-    send). The caller can use this signal to log a warning — the message
-    may have been sent successfully but the audit row is now stuck as
-    `unknown_post_send` with no message_id. (Codex F4.)
-    """
+def finalize(db_path: Path, reservation: Reservation, new_status: str,
+             message_id: str | None = None) -> int:
     if new_status not in {"sent", "dry_run", "failed_pre_send", "unknown_post_send"}:
         raise ValueError(f"invalid finalize status: {new_status!r}")
     conn = _connect(db_path)
@@ -231,8 +202,7 @@ def finalize(
                 "UPDATE sends SET status=?, message_id=?, finalized_at_utc=? "
                 "WHERE id=? AND status='reserved'",
                 (
-                    new_status,
-                    message_id,
+                    new_status, message_id,
                     datetime.now(timezone.utc).isoformat(timespec="seconds"),
                     reservation.row_id,
                 ),
@@ -243,8 +213,11 @@ def finalize(
 
 
 class RateLimitExceeded(Exception):
-    def __init__(self, *, recipient: str, limit: int, sent_today: int):
-        super().__init__(f"rate limit exceeded for {recipient}: {sent_today}/{limit}")
+    def __init__(self, *, caller: str, recipient: str, limit: int, sent_today: int):
+        super().__init__(
+            f"rate limit exceeded for {caller}/{recipient}: {sent_today}/{limit}"
+        )
+        self.caller = caller
         self.recipient = recipient
         self.limit = limit
         self.sent_today = sent_today

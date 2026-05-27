@@ -1,0 +1,18 @@
+# hermes-mailer — single-caller allowlist (the default "elena" caller).
+# Lives at /etc/hermes-mailer/allowlist.yaml on the host.
+# Mode 600 + ACL dbexpertai:rw — David edits without sudo.
+#
+# To partition allowlists per caller (future multi-tenant), instead use:
+#   /etc/hermes-mailer/allowlists/elena.yaml
+#   /etc/hermes-mailer/allowlists/winnow-agent.yaml
+# The multi-file form wins if present.
+#
+# Changes are picked up on the NEXT request — no daemon restart needed.
+
+contacts:
+  # - email: david@example.com
+  #   daily_limit: 5
+  #   note: "self, for testing"
+  # - email: bob@example.com
+  #   daily_limit: 2
+  #   note: "work colleague"

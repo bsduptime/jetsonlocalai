@@ -1,13 +1,7 @@
-"""Transport implementations: dry-run, Resend, SMTP.
+"""Transport implementations (DryRun, Resend, SMTP).
 
-The dry-run transport is always selected when EMAIL_DRY_RUN=true regardless
-of EMAIL_TRANSPORT — belt-and-suspenders so a misconfigured `.env` can't
-accidentally send live during dev.
-
-Resend SDK and smtplib have different failure modes; we normalize them into
-either `PreSendError` (transport rejected before bytes left the host —
-doesn't burn the per-recipient daily quota) or a regular Exception (which
-the handler treats as post-send-unknown — DOES burn the quota, conservative).
+Lifted from the plugin's transport.py — semantically identical. Lives in
+the daemon so the Resend / SMTP credentials never reach Elena's process.
 """
 
 from __future__ import annotations
@@ -103,25 +97,18 @@ class ResendTransport:
         try:
             resp = resend.Emails.send(params)
         except Exception as e:
-            # The SDK raises different classes across versions; map known
-            # client-side rejections to PreSendError, treat everything else
-            # as post-send-unknown by re-raising.
             cls_name = type(e).__name__
             if cls_name in {
-                "ResendValidationError",
-                "ResendBadRequestError",
-                "ResendNotFoundError",
-                "ResendUnauthorizedError",
+                "ResendValidationError", "ResendBadRequestError",
+                "ResendNotFoundError", "ResendUnauthorizedError",
                 "ResendForbiddenError",
             }:
                 raise PreSendError(f"resend_rejected: {e}") from e
-            # Some SDK versions stash the HTTP status on the exception.
             status = getattr(e, "code", None) or getattr(e, "status_code", None)
             if isinstance(status, int) and 400 <= status < 500:
                 raise PreSendError(f"resend_rejected_{status}: {e}") from e
             raise
 
-        # Normalize the response shape — dict or object across SDK versions.
         msg_id = None
         if isinstance(resp, dict):
             msg_id = resp.get("id")
@@ -133,15 +120,8 @@ class ResendTransport:
 class SMTPTransport:
     name = "smtp"
 
-    def __init__(
-        self,
-        *,
-        host: str,
-        port: int,
-        username: str | None,
-        password: str | None,
-        starttls: bool,
-    ):
+    def __init__(self, *, host: str, port: int, username: str | None,
+                 password: str | None, starttls: bool):
         if not host:
             raise PreSendError("smtp_host_missing")
         self.host = host
@@ -153,12 +133,6 @@ class SMTPTransport:
     def send(self, msg: RenderedEmail) -> str:
         em = _build_email_message(msg, message_id=make_msgid(domain="hermes.local"))
         ctx = ssl.create_default_context()
-        # TLS mode is decided by the port, not the flag (cleaner contract):
-        #   - port 465 → implicit TLS via SMTP_SSL. starttls flag ignored.
-        #   - port != 465 → plain SMTP + optional STARTTLS upgrade.
-        # The SMTP_STARTTLS flag only controls whether we attempt STARTTLS on
-        # non-465 ports. We fail closed if STARTTLS is required but the
-        # server doesn't support it.
         use_implicit_tls = self.port == 465
         try:
             if use_implicit_tls:
@@ -172,14 +146,10 @@ class SMTPTransport:
             with smtp:
                 if not use_implicit_tls and self.starttls:
                     try:
-                        smtp.ehlo()
-                        smtp.starttls(context=ctx)
-                        smtp.ehlo()
+                        smtp.ehlo(); smtp.starttls(context=ctx); smtp.ehlo()
                     except smtplib.SMTPException as e:
                         raise PreSendError(f"smtp_starttls_failed: {e}") from e
                 elif not use_implicit_tls and not self.starttls:
-                    # Plain SMTP with no encryption. Almost always wrong;
-                    # we allow it for local relays / testing only.
                     smtp.ehlo()
                 if self.username:
                     try:
@@ -187,10 +157,7 @@ class SMTPTransport:
                     except smtplib.SMTPAuthenticationError as e:
                         raise PreSendError(f"smtp_auth_failed: {e}") from e
                     except smtplib.SMTPException as e:
-                        # Other auth-time errors are also pre-send rejections.
                         raise PreSendError(f"smtp_auth_error: {e}") from e
-                # The send is the post-send-unknown boundary. Anything that
-                # raises here may have actually delivered the message.
                 smtp.send_message(em)
         except PreSendError:
             raise
@@ -223,7 +190,6 @@ def _build_email_message(msg: RenderedEmail, *, message_id: str) -> EmailMessage
 
 
 def make_transport(*, dry_run: bool, transport_name: str, cfg) -> Transport:
-    """Factory. `cfg` is the Config dataclass; we read only what we need."""
     if dry_run or transport_name == "dry_run":
         return DryRunTransport(cfg.dryrun_dir)
     if transport_name == "resend":
