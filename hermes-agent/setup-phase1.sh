@@ -133,8 +133,43 @@ step "7b/7: Clean any partial Hermes install under /home/hermes"
 # If a previous run of this script got interrupted mid-install (e.g. blocked
 # on the sudo-for-ripgrep prompt before we added 7a), there may be a partial
 # ~/.hermes tree.  Wipe it so the installer starts clean.
+#
+# SAFETY: refuse to wipe if /home/hermes/.hermes contains a POPULATED state
+# (state.db with non-trivial size, or a sessions/ dir with files). This
+# prevents an accidental re-run of setup-phase1.sh from nuking weeks of
+# chat history, memory, skills, and OAuth.  Override with FORCE_WIPE=1 if
+# you really mean to.  See db-guard at hermes-agent/monitoring/ — backups
+# live at /var/lib/hermes-db-backups (outside /home/hermes), so even if you
+# do force-wipe, state.db can be restored.
 if [ -d /home/hermes/.hermes ]; then
-    echo "removing partial /home/hermes/.hermes from prior interrupted run"
+    populated=0
+    if [ -f /home/hermes/.hermes/state.db ] && \
+       [ "$(stat -c '%s' /home/hermes/.hermes/state.db 2>/dev/null || echo 0)" -gt 100000 ]; then
+        populated=1
+    fi
+    if [ -d /home/hermes/.hermes/sessions ] && \
+       [ -n "$(ls -A /home/hermes/.hermes/sessions 2>/dev/null)" ]; then
+        populated=1
+    fi
+    if [ "$populated" = "1" ] && [ "${FORCE_WIPE:-0}" != "1" ]; then
+        cat >&2 <<EOF
+
+ERROR: /home/hermes/.hermes is populated with real state:
+$(ls -la /home/hermes/.hermes 2>/dev/null | head -8)
+
+Refusing to wipe it. This script was last hardened on 2026-05-27 after a
+near-miss: re-running it without the check would have nuked weeks of chat
+history, memory, skills, and OAuth state.
+
+If you genuinely want to wipe and reinstall (e.g. recovering from a
+broken install): FORCE_WIPE=1 sudo bash hermes-agent/setup-phase1.sh
+
+The db-guard backups at /var/lib/hermes-db-backups/ outside /home/hermes
+will survive the wipe, so you can restore state.db afterward.
+EOF
+        exit 1
+    fi
+    echo "removing /home/hermes/.hermes (populated=$populated, FORCE_WIPE=${FORCE_WIPE:-0})"
     rm -rf /home/hermes/.hermes
 fi
 if [ -f /home/hermes/.local/bin/hermes ]; then
