@@ -43,38 +43,45 @@ step "1/7: Install Python deps system-wide"
 # pyyaml is hard-required for allowlist parsing.
 apt-get update -qq
 apt-get install -y -qq python3-yaml acl
-# Resend is optional — only needed when EMAIL_TRANSPORT=resend. We install
-# it via pip into a venv-free system path. Skip if pip isn't available;
-# the daemon will return a structured error if Resend is selected without
-# the SDK installed.
-if command -v pip3 >/dev/null; then
-    pip3 install --break-system-packages --quiet resend 2>&1 | tail -3 || true
+# Resend is optional — only needed when EMAIL_TRANSPORT=resend. We try
+# `pip3 install` only if `import resend` doesn't already work. The
+# --break-system-packages flag was added in pip 23+ and isn't on Ubuntu
+# 22.04's stock pip 22.x, so we just call pip3 without it; Ubuntu 22.04
+# doesn't enforce PEP 668 so system-site-packages writes succeed.
+if python3 -c 'import resend' 2>/dev/null; then
+    echo "  resend SDK already installed system-wide ($(python3 -c 'import resend; print(resend.__version__)'))"
+elif command -v pip3 >/dev/null; then
+    pip3 install --quiet resend 2>&1 | tail -3 || \
+        echo "  warning: pip3 install resend failed; transport=resend will return a clear error"
 fi
 
 # ---------------------------------------------------------------------------
 step "2/7: Stage hermes_mailer package at /usr/local/lib/hermes-mailer/"
 # ---------------------------------------------------------------------------
+# We COPY (not symlink) because the daemon runs with ProtectHome=yes,
+# which makes /home invisible to the process. A symlink under
+# /usr/local/lib pointing into /home/dbexpertai/code/... would dangle
+# from the daemon's view. Re-run this setup script after pulling repo
+# updates to refresh the installed code.
 install -d -o root -g root -m 755 /usr/local/lib/hermes-mailer
-# Symlink so future repo updates flow through automatically. Refuse to
-# clobber a real directory.
 TARGET=/usr/local/lib/hermes-mailer/hermes_mailer
 if [ -L "$TARGET" ]; then
-    cur=$(readlink "$TARGET")
-    if [ "$cur" = "$PKG_SRC" ]; then
-        echo "symlink already correct: $TARGET -> $cur"
-    else
-        echo "warning: $TARGET points elsewhere ($cur). Updating."
-        rm -f "$TARGET"
-        ln -s "$PKG_SRC" "$TARGET"
-    fi
-elif [ -e "$TARGET" ]; then
-    echo "error: $TARGET exists and is not a symlink. Refusing to clobber." >&2
-    exit 1
-else
-    ln -s "$PKG_SRC" "$TARGET"
-    echo "linked $TARGET -> $PKG_SRC"
+    echo "removing stale symlink at $TARGET"
+    rm -f "$TARGET"
 fi
-# Smoke-test the import path works.
+if [ -d "$TARGET" ]; then
+    rm -rf "$TARGET"
+fi
+cp -r "$PKG_SRC" "$TARGET"
+chown -R root:root "$TARGET"
+find "$TARGET" -type d -exec chmod 755 {} +
+find "$TARGET" -type f -exec chmod 644 {} +
+echo "installed package at $TARGET (copy from $PKG_SRC)"
+# Drop any __pycache__/ dirs that were copied along — they'd be from a
+# different python version and might cause subtle import bugs.
+find "$TARGET" -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+
+# Smoke-test the import path works from the install location.
 PYTHONPATH=/usr/local/lib/hermes-mailer python3 -c \
     'import hermes_mailer; print("hermes_mailer", hermes_mailer.__version__)'
 

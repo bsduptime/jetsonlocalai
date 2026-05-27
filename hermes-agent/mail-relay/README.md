@@ -67,7 +67,7 @@ sudo -u hermes hermes tools list        # send_email should appear
 | `/var/lib/hermes-mailer/dryrun/*.eml` | `dynamic 0600` | Rendered messages in dry-run |
 | `/run/hermes-mailer/sock` | `dynamic 0660 hermes-mailer-clients` | UDS — Elena connects here |
 | `/usr/local/sbin/hermes-mailer` | — | (none — daemon runs via `python3 -m hermes_mailer.daemon`) |
-| `/usr/local/lib/hermes-mailer/hermes_mailer/` | symlink → repo | Package source |
+| `/usr/local/lib/hermes-mailer/hermes_mailer/` | root:root 0755 | Package source (COPIED from repo by setup script — daemon runs with `ProtectHome=yes` so symlinks into `/home` would be invisible). Re-run `setup-hermes-mailer.sh` after pulling repo updates to refresh. |
 
 ## Operational
 
