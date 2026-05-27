@@ -1,0 +1,25 @@
+name: vault
+version: 0.1.0
+description: |
+  Read-and-write access to David's shared Obsidian vault under the contract
+  defined in projects/maclocalai/shared-memory-architecture.md (v4+):
+
+  - vault_session_brief: bundle INDEX.md, areas/schedule.md, last 7 days of
+    daily notes. Call this once at the start of every chat session.
+  - vault_read: read any file under the vault with staleness check.
+  - vault_write_observation: append-only writes to agents/hermes/observations/
+    with auto-generated YYYY-MM-DD-HHMM-<slug>.md naming.
+  - vault_write_memory: read-write to agents/hermes/memory/ (subdirs allowed).
+  - vault_conflict_scan: scan for sync-conflict files. If any are found
+    under agents/hermes/, treat them as errors and surface to David.
+
+  All path containment is enforced in code, not just by prompt. The kernel
+  refuses any write outside agents/hermes/ via POSIX ACLs (step 7), so any
+  contract violation either fails in the handler or fails at the syscall.
+author: David Klippel
+provides_tools:
+  - vault_session_brief
+  - vault_read
+  - vault_write_observation
+  - vault_write_memory
+  - vault_conflict_scan
