@@ -1,12 +1,16 @@
-"""Shared pytest fixtures.
+"""Shared pytest fixtures for the mailer plugin (the thin UDS client).
 
-The plugin directory is named `email/` because Hermes uses the dir name as
-the plugin name — but that collides with Python's stdlib `email` package.
-We sidestep the collision by registering the plugin under a non-colliding
-synthetic name (`hermes_email_pkg`) using importlib. The plugin's own
-relative imports (`from .errors import …`) resolve under that synthetic
-name. In production, Hermes' own loader names the package whatever it
-likes — the relative-import structure is robust to both.
+The plugin directory would be imported as `mailer`, but to keep the tests
+independent of how Hermes' loader names it we bootstrap the package under a
+fixed synthetic name (`hermes_email_pkg`). The plugin's relative imports
+(`from . import _client`) resolve under that name.
+
+These tests cover only what the CLIENT does: field-type pre-validation,
+client-side attachment *path* validation, envelope framing, response
+`v`-stripping, and the `daemon_unreachable` path. The policy enforcement
+(allowlist, rate-limit, magic bytes, header injection, transports, and the
+contacts directory) lives in the daemon and is tested under
+`../../mail-relay/tests/`.
 """
 
 from __future__ import annotations
@@ -35,7 +39,6 @@ def _bootstrap_plugin_package() -> None:
         raise RuntimeError(f"could not load plugin from {init_path}")
     mod = importlib.util.module_from_spec(spec)
     sys.modules[PACKAGE_ALIAS] = mod
-    # Loading __init__.py also imports handler/schemas eagerly, which is fine.
     spec.loader.exec_module(mod)
 
 
@@ -44,23 +47,18 @@ _bootstrap_plugin_package()
 
 @pytest.fixture(autouse=True)
 def _isolate_env(tmp_path, monkeypatch):
-    pdir = tmp_path / "email-plugin"
-    pdir.mkdir(parents=True, exist_ok=True)
-    (pdir / "state").mkdir(parents=True, exist_ok=True)
-    (pdir / "state" / "dryrun").mkdir(parents=True, exist_ok=True)
-    monkeypatch.setenv("EMAIL_PLUGIN_DIR", str(pdir))
-    for k in list(os.environ):
-        if k.startswith("EMAIL_") and k != "EMAIL_PLUGIN_DIR":
-            monkeypatch.delenv(k, raising=False)
-        if k.startswith("SMTP_") or k.startswith("RESEND_"):
-            monkeypatch.delenv(k, raising=False)
-    monkeypatch.setenv("EMAIL_DRY_RUN", "true")
-    monkeypatch.setenv("EMAIL_TRANSPORT", "dry_run")
-    monkeypatch.setenv("EMAIL_FROM", "Hermes Test <test@example.com>")
-    # Allow attachments from the test tmp_path too, not just /tmp/.
+    # Attachments may be staged anywhere under tmp_path (an allowed prefix)
+    # in addition to /tmp/.
     monkeypatch.setenv("EMAIL_ATTACHMENT_ALLOWED_PREFIXES",
                        f"/tmp/:{tmp_path}/")
-    yield pdir
+    # Point the client at a socket that does NOT exist, so a test that
+    # reaches the connect() step gets `daemon_unreachable` instead of
+    # accidentally talking to the real daemon running on this host.
+    monkeypatch.setenv("HERMES_MAILER_SOCKET", str(tmp_path / "no-such.sock"))
+    for k in list(os.environ):
+        if k.startswith("EMAIL_MAX_"):
+            monkeypatch.delenv(k, raising=False)
+    yield tmp_path
 
 
 @pytest.fixture

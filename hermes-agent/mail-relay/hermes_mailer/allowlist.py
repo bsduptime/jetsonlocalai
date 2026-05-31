@@ -58,6 +58,39 @@ def _parse_yaml_or_json(text: str) -> dict:
         raise ValueError(f"json parse failed (pyyaml not installed): {e}") from e
 
 
+def _normalize_aliases(raw, i: int) -> list[str]:
+    """Validate + normalize an entry's optional `aliases` list.
+
+    Each alias is a short human-friendly handle the AGENT uses to resolve a
+    name to an address (e.g. "yoram", "me", "my email"). They are NOT a
+    security boundary — the allowlist is still keyed by email and the daemon
+    only ever sends to a literal allowlisted address. We normalize to
+    lowercase + dedup within the entry and cap length so the directory the
+    agent sees stays clean.
+    """
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise ValueError(f"contact[{i}].aliases must be a list")
+    seen_local: set[str] = set()
+    out: list[str] = []
+    for j, a in enumerate(raw):
+        if not isinstance(a, str):
+            raise ValueError(f"contact[{i}].aliases[{j}] must be a string")
+        a_lc = a.strip().lower()
+        if not a_lc:
+            raise ValueError(f"contact[{i}].aliases[{j}] is empty")
+        if len(a_lc) > 64:
+            raise ValueError(f"contact[{i}].aliases[{j}] too long (>64 chars)")
+        if any(ord(c) < 0x20 for c in a_lc):
+            raise ValueError(f"contact[{i}].aliases[{j}] has control chars")
+        if a_lc in seen_local:
+            raise ValueError(f"contact[{i}] duplicate alias within entry: {a_lc!r}")
+        seen_local.add(a_lc)
+        out.append(a_lc)
+    return out
+
+
 def _normalize_entries(obj: dict) -> dict[str, dict]:
     if not isinstance(obj, dict):
         raise ValueError("top-level must be a mapping with `contacts`")
@@ -65,6 +98,9 @@ def _normalize_entries(obj: dict) -> dict[str, dict]:
     if not isinstance(contacts, list):
         raise ValueError("`contacts` must be a list")
     out: dict[str, dict] = {}
+    # Track aliases across ALL entries so the agent never sees an ambiguous
+    # handle. An alias may not collide with another alias or with any email.
+    alias_owner: dict[str, str] = {}
     for i, entry in enumerate(contacts):
         if not isinstance(entry, dict):
             raise ValueError(f"contact[{i}] must be a mapping")
@@ -82,10 +118,26 @@ def _normalize_entries(obj: dict) -> dict[str, dict]:
         if email_lc in out:
             raise ValueError(f"duplicate email: {email_lc}")
         note = entry.get("note")
+        name = entry.get("name")
+        if name is not None and not isinstance(name, str):
+            raise ValueError(f"contact[{i}].name must be a string")
+        name = name.strip() if isinstance(name, str) and name.strip() else None
+        aliases = _normalize_aliases(entry.get("aliases"), i)
+        for a in aliases:
+            if a in alias_owner and alias_owner[a] != email_lc:
+                raise ValueError(
+                    f"alias {a!r} on {email_lc} already used by {alias_owner[a]}")
+            alias_owner[a] = a
         out[email_lc] = {
             "daily_limit": limit_raw,
             "note": note if isinstance(note, str) else None,
+            "name": name,
+            "aliases": aliases,
         }
+    # An alias must never shadow a real email address either.
+    for a in alias_owner:
+        if a in out:
+            raise ValueError(f"alias {a!r} collides with a contact email")
     return out
 
 

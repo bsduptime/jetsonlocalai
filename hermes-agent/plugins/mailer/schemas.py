@@ -2,6 +2,29 @@
 
 from __future__ import annotations
 
+LIST_CONTACTS = {
+    "name": "list_contacts",
+    "description": (
+        "List the pre-approved email contacts. Returns an array `contacts`, "
+        "each with `email`, `name` (human name or null), `aliases` (lowercase "
+        "handles the user might say, e.g. \"yoram\", \"me\", \"my email\"), "
+        "`note`, `daily_limit`, and `remaining_today` (sends left today, or "
+        "null if unknown). Call this FIRST whenever the user refers to a "
+        "recipient by name or relationship instead of giving an email address "
+        "(\"send this to Yoram\", \"email it to me\"): match the name/alias to "
+        "a contact, then pass that contact's exact `email` to send_email. If "
+        "no contact matches, tell the user instead of guessing an address — "
+        "send_email only accepts addresses already on the allowlist. Takes no "
+        "arguments."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": False,
+    },
+}
+
+
 SEND_EMAIL = {
     "name": "send_email",
     "description": (
@@ -24,7 +47,9 @@ SEND_EMAIL = {
                 "type": "string",
                 "description": (
                     "Recipient email address (bare address, no display name). "
-                    "Must be on the allowlist."
+                    "Must be on the allowlist. If the user gave a name instead "
+                    "of an address, resolve it with list_contacts first and "
+                    "pass the resolved address here."
                 ),
             },
             "subject": {

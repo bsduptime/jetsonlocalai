@@ -9,10 +9,21 @@
 #
 # Changes are picked up on the NEXT request — no daemon restart needed.
 
+#
+# Optional per-contact fields `name` and `aliases` let the agent resolve a
+# spoken name to an address ("send this to yoram", "email it to me") via the
+# list_contacts tool. They are convenience only — the email is still the key
+# the daemon sends to and rate-limits on. Aliases are lowercased; an alias
+# may not collide with another contact's alias or email.
+
 contacts:
   # - email: david@example.com
   #   daily_limit: 5
+  #   name: David
+  #   aliases: ["me", "my email", "myself"]
   #   note: "self, for testing"
   # - email: bob@example.com
   #   daily_limit: 2
+  #   name: Bob
+  #   aliases: ["bob"]
   #   note: "work colleague"

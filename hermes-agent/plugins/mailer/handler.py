@@ -100,3 +100,25 @@ def send_email(args: dict, **_kwargs) -> str:
     if isinstance(resp, dict) and "v" in resp:
         resp = {k: v for k, v in resp.items() if k != "v"}
     return json.dumps(resp)
+
+
+def list_contacts(args: dict, **_kwargs) -> str:
+    """Return the pre-approved contact directory so the agent can resolve a
+    name/alias (e.g. "yoram", "my email") to an allowlisted address before
+    calling send_email. Read-only; sends nothing. Always returns JSON,
+    never raises."""
+    try:
+        resp = _client.list_contacts()
+    except _client.DaemonUnreachable as e:
+        return json.dumps({
+            "ok": False, "error": "transport_failed",
+            "reason": "daemon_unreachable", "detail": f"{e.reason}: {e.detail}",
+        })
+    except Exception as e:
+        return json.dumps({
+            "ok": False, "error": "invalid_input",
+            "reason": "internal_error", "detail": type(e).__name__,
+        })
+    if isinstance(resp, dict) and "v" in resp:
+        resp = {k: v for k, v in resp.items() if k != "v"}
+    return json.dumps(resp)

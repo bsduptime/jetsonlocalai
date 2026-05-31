@@ -8,3 +8,4 @@ description: |
 author: David Klippel
 provides_tools:
   - send_email
+  - list_contacts

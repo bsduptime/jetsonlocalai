@@ -40,6 +40,68 @@ def _ok(*, status: str, request_id: str, to: str, message_id: str | None,
     }
 
 
+def handle_contacts(*, cfg: Config, caller: str, request: dict[str, Any]) -> dict:
+    """Process one `op=contacts` request.
+
+    Returns the caller's contact directory so the agent can resolve a
+    human name/alias to an address before calling `send_email`. This is a
+    convenience surface only: it never sends anything, and the allowlist
+    remains the hard gate on `send`. Each entry includes `remaining_today`
+    so the agent can tell up-front whether a send would be rate-limited.
+    """
+    request_id = request.get("request_id", "")
+    if not isinstance(request_id, str) or len(request_id) > 64:
+        return _err(error="protocol", reason="malformed_request_id",
+                    request_id="", detail="request_id must be string ≤64 chars")
+
+    contacts, allowlist_err = allowlist.load_for_caller(
+        caller=caller,
+        single_path=cfg.allowlist_single_path,
+        allowlists_dir=cfg.allowlists_dir,
+    )
+    if allowlist_err:
+        audit.append(cfg.audit_log_path, {
+            "request_id": request_id, "caller": caller,
+            "event": "allowlist_load_warning",
+            "outcome": "using_cache" if contacts else "no_cache",
+            "detail": allowlist_err,
+        })
+
+    local_day = ratelimit.local_day_str(cfg.limit_tz)
+    resets_at = ratelimit.next_midnight_iso(cfg.limit_tz)
+    directory = []
+    for email_lc, entry in contacts.items():
+        limit = int(entry["daily_limit"])
+        try:
+            sent_today = ratelimit.count_today(
+                cfg.ratelimit_db_path,
+                caller=caller, recipient=email_lc, local_day=local_day,
+            )
+        except Exception:
+            # Never let a DB hiccup turn a read-only directory lookup into a
+            # failure — just omit the live count for this contact.
+            sent_today = None
+        directory.append({
+            "email": email_lc,
+            "name": entry.get("name"),
+            "aliases": list(entry.get("aliases") or []),
+            "note": entry.get("note"),
+            "daily_limit": limit,
+            "remaining_today": (None if sent_today is None
+                                else max(0, limit - sent_today)),
+        })
+    directory.sort(key=lambda c: c["email"])
+
+    audit.append(cfg.audit_log_path, {
+        "request_id": request_id, "caller": caller,
+        "event": "contacts", "outcome": "ok", "count": len(directory),
+    })
+    return {
+        "v": 1, "request_id": request_id, "ok": True,
+        "contacts": directory, "resets_at": resets_at,
+    }
+
+
 def handle_send(*, cfg: Config, caller: str, request: dict[str, Any]) -> dict:
     """Process one `op=send` request.
 

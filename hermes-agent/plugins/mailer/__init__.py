@@ -12,8 +12,8 @@ from __future__ import annotations
 
 import logging
 
-from .handler import send_email
-from .schemas import SEND_EMAIL
+from .handler import list_contacts, send_email
+from .schemas import LIST_CONTACTS, SEND_EMAIL
 
 log = logging.getLogger("hermes.plugins.mailer")
 
@@ -26,7 +26,13 @@ def register(ctx) -> None:
             schema=SEND_EMAIL,
             handler=send_email,
         )
-        log.info("hermes-mailer: send_email tool registered")
+        ctx.register_tool(
+            name="list_contacts",
+            toolset="mailer",
+            schema=LIST_CONTACTS,
+            handler=list_contacts,
+        )
+        log.info("hermes-mailer: send_email + list_contacts tools registered")
     except Exception:
-        log.exception("hermes-mailer: failed to register send_email")
+        log.exception("hermes-mailer: failed to register mailer tools")
         raise

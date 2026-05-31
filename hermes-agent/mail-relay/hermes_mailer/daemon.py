@@ -29,7 +29,7 @@ from typing import Any
 from . import audit, ratelimit
 from .config import Config, ensure_state_dirs, load_config
 from .errors import ProtocolError
-from .handler import handle_send
+from .handler import handle_contacts, handle_send
 
 log = logging.getLogger("hermes_mailer.daemon")
 
@@ -188,6 +188,8 @@ def _handle_connection(conn: socket.socket, cfg: Config) -> None:
         op = req.get("op")
         if op == "send":
             response = handle_send(cfg=cfg, caller=caller, request=req)
+        elif op == "contacts":
+            response = handle_contacts(cfg=cfg, caller=caller, request=req)
         else:
             _write_response(conn, {
                 "v": 1, "request_id": request_id, "ok": False,

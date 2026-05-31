@@ -168,6 +168,33 @@ def send(*, to: str, subject: str, body: str,
         "body_html": body_html,
         "attachments": attachments_payload,
     }
+    return _roundtrip(envelope, sock_path=sock_path, timeout_seconds=timeout_seconds)
+
+
+def list_contacts(*, socket_path: str | None = None,
+                  timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS) -> dict:
+    """Ask the daemon for the caller's contact directory.
+
+    Returns the daemon's response dict verbatim (contains a `contacts`
+    list of {email, name, aliases, note, daily_limit, remaining_today}).
+    Carries no attachments and no secrets — it's a read-only lookup the
+    agent uses to resolve a name/alias to an allowlisted address.
+
+    Raises DaemonUnreachable on socket trouble, same as `send`.
+    """
+    sock_path = socket_path or os.environ.get(
+        "HERMES_MAILER_SOCKET", DEFAULT_SOCKET_PATH)
+    envelope = {"v": 1, "op": "contacts", "request_id": uuid.uuid4().hex}
+    return _roundtrip(envelope, sock_path=sock_path, timeout_seconds=timeout_seconds)
+
+
+def _roundtrip(envelope: dict, *, sock_path: str,
+               timeout_seconds: int) -> dict:
+    """Open the UDS, write one JSON line, read one JSON line, close.
+
+    Raises DaemonUnreachable if the socket can't be reached or the daemon
+    fails to respond within timeout_seconds.
+    """
     payload = (json.dumps(envelope, ensure_ascii=False, separators=(",", ":"))
                + "\n").encode("utf-8")
 

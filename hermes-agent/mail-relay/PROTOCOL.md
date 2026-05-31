@@ -88,8 +88,11 @@ pickle is unsafe across trust boundaries.
 ```
 
 - `v` (required, int) — protocol version. Daemon rejects unknown versions.
-- `op` (required, string) — operation. Initially only `"send"`. Future:
-  `"quota"` (read remaining-today), `"verify"` (dry-validate an envelope).
+- `op` (required, string) — operation. `"send"` (send an email) and
+  `"contacts"` (read the caller's contact directory) are implemented.
+  Future: `"quota"` (read remaining-today only), `"verify"` (dry-validate
+  an envelope). A `contacts` request carries only `v`, `op`, and
+  `request_id` — no other fields.
 - `request_id` (required, string, ≤64 chars [a-zA-Z0-9_-]) — for log
   correlation. Daemon echoes it in the response.
 - `to`, `subject`, `body`, `body_html`, `attachments` — same semantics
@@ -111,6 +114,42 @@ Mapping (initial):
 Future Winnow agents would each have their own dedicated UID; the table
 just grows. Multi-tenant scoping is then a config edit, not a code
 change.
+
+### `op = "contacts"`
+
+A read-only directory lookup. No send, no rate-limit reservation — the
+allowlist is still the hard gate on `send`, so this is pure convenience for
+resolving a human name/alias to an allowlisted address.
+
+Request:
+```json
+{"v": 1, "op": "contacts", "request_id": "..."}
+```
+
+Response (`remaining_today` is `null` if the rate-limit DB couldn't be
+read; entries are sorted by `email`):
+```json
+{
+  "v": 1,
+  "request_id": "...",
+  "ok": true,
+  "contacts": [
+    {
+      "email": "yoram@dbexpert.ai",
+      "name": "Yoram",
+      "aliases": ["yoram"],
+      "note": "co-founder dbexpert.ai",
+      "daily_limit": 5,
+      "remaining_today": 5
+    }
+  ],
+  "resets_at": "2026-05-28T00:00:00+02:00"
+}
+```
+
+The directory is derived from the same per-caller allowlist `send` uses, so
+it can never list a recipient `send` would reject. It exposes no secrets —
+only the operator's own contact handles.
 
 ### Response envelope
 
