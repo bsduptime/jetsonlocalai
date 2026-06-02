@@ -25,7 +25,7 @@ VOICE="${2:-}"
 EXAG="${3:-}"
 CFG="${4:-}"
 TEMP="${5:-}"
-SPEED="${6:-1.2}"
+SPEED="${6:-1.0}"
 TTS_URL="${TTS_URL:-http://localhost:18080}"
 LISTENER_URL="${LISTENER_URL:-http://100.82.188.1:18082}"
 
