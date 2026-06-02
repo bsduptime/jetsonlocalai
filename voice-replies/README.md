@@ -22,7 +22,7 @@ bash install.sh
   When a session narrates via `voice-say`, the voice is chosen from this map by
   the current repo (git-toplevel basename), so each project sounds the same on
   every machine and parallel sessions are distinguishable by ear. Unmapped
-  repos fall back to `devnen-elena`; an explicit voice arg always overrides.
+  repos fall back to `devnen-eli`; an explicit voice arg always overrides.
   Installed **create-if-missing** so your curated edits survive re-runs (delete
   it and re-run to reset to the repo defaults).
 

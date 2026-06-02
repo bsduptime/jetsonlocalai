@@ -6,21 +6,23 @@
 # Repos that only exist on one machine just sit unused in the other's copy.
 #
 # Format: one "repo: voice" line per repo, where "repo" is the git-toplevel
-# basename (the same name voice-say prepends to every narration). Unmapped
-# repos fall back to devnen-elena. An explicit voice arg to voice-say overrides.
+# basename (the same name voice-say prepends to every narration). Unmapped repos
+# fall back to devnen-eli (DEFAULT_VOICE). An explicit voice arg to voice-say
+# always overrides this file.
+#
+# Voices below are the ones David kept after vetting (see vet-voices.html). All
+# davidk-* voices and the rest of the devnen pack were cut. devnen-elena is kept
+# but deliberately NOT used here — it's reserved for the hermes agent.
 #
 # Audition a voice:  afplay <(curl -s http://192.168.1.200:18080/previews/<voice>.wav)
 # List all 36:       curl -s http://192.168.1.200:18080/voices | python3 -m json.tool
-# Swap = edit the line + save. Takes effect on the next call, no restart.
-# Voices tagged (vetted) are quality-checked; the rest are male/female-contrast
-# picks — swap freely once you've heard them.
 
-maclocalai:            devnen-elena      # (vetted) female, calm — default
-dbexpertai.com:        devnen-austin     # (vetted) male
-content:               davidk-drive      # (vetted) David's own voice — aka "Winnow"
-winnow:                davidk-drive      # alias: when the content repo is renamed to winnow
-dbdiagnostics:         devnen-henry      # male
-jetsonlocalai:         devnen-gianna     # female
-relational-dba-plugin: devnen-julian     # male
-telaviv-doctor.com:    devnen-layla      # female
-testserver:            devnen-miles      # male
+maclocalai:            devnen-austin     # vetted — main repo
+content:               devnen-alice      # David's pick — aka "Winnow"
+winnow:                devnen-alice      # alias: when content is renamed to winnow
+dbexpertai.com:        devnen-julian     # David's pick
+dbdiagnostics:         devnen-leonardo   # David's pick
+telaviv-doctor.com:    devnen-michael    # David's pick
+jetsonlocalai:         devnen-jeremiah   # kept
+relational-dba-plugin: devnen-eli        # kept
+# testserver: (unmapped) -> falls back to DEFAULT_VOICE = devnen-eli

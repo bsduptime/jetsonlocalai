@@ -38,7 +38,7 @@ fi
 # Resolves a voice from the current repo via $VOICE_PROFILES_FILE (default
 # ~/.claude/voice-profiles) so the same repo speaks in the same voice on the
 # Jetson as on the Mac.
-DEFAULT_VOICE="devnen-elena"
+DEFAULT_VOICE="devnen-eli"
 if [ -z "$VOICE" ]; then
   PROFILES="${VOICE_PROFILES_FILE:-$HOME/.claude/voice-profiles}"
   REPO="$(basename "$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null || pwd)")"
