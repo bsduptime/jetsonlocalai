@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# jetson-voice-say — synthesize TTS on this Jetson (localhost), ship the WAV
+# to the Mac listener for playback over Tailscale.
+#
+# Drop-in replacement for the Mac voice-say wrapper, for use *on the Jetson*
+# when running Claude Code there during a remote session. Same arg shape so
+# CLAUDE.md narration rules transfer unchanged — just swap the trigger path.
+#
+# Usage:
+#   jetson-voice-say "text" [voice] [exaggeration] [cfg_weight] [temperature] [speed]
+#
+# Env:
+#   TTS_URL       local TTS server (default: http://localhost:18080)
+#   LISTENER_URL  Mac listener URL (default: http://100.82.188.1:18082 — Mac Tailscale IP)
+#
+# Flow:
+#   1. POST text → http://localhost:18080/synthesize → WAV bytes (no network)
+#   2. POST WAV  → http://<mac-tailscale>:18082/play  → afplay on Mac
+#
+# Silent if either fails (no local speakers on a headless Jetson worth using).
+
+set -u
+TEXT="${1:-}"
+VOICE="${2:-}"
+EXAG="${3:-}"
+CFG="${4:-}"
+TEMP="${5:-}"
+SPEED="${6:-1.2}"
+TTS_URL="${TTS_URL:-http://localhost:18080}"
+LISTENER_URL="${LISTENER_URL:-http://100.82.188.1:18082}"
+
+if [ -z "$TEXT" ]; then
+  echo "usage: jetson-voice-say \"text\" [voice] [exaggeration] [cfg_weight] [temperature] [speed]" >&2
+  exit 2
+fi
+
+# --- Per-repo voice profile (keep in sync with ../voice-say) -----------------
+# Resolves a voice from the current repo via $VOICE_PROFILES_FILE (default
+# ~/.claude/voice-profiles) so the same repo speaks in the same voice on the
+# Jetson as on the Mac.
+DEFAULT_VOICE="devnen-elena"
+if [ -z "$VOICE" ]; then
+  PROFILES="${VOICE_PROFILES_FILE:-$HOME/.claude/voice-profiles}"
+  REPO="$(basename "$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null || pwd)")"
+  if [ -f "$PROFILES" ]; then
+    VOICE="$(awk -F'[:=]' -v r="$REPO" '
+      /^[[:space:]]*#/ { next }
+      NF < 2 { next }
+      { key=$1; gsub(/^[[:space:]]+|[[:space:]]+$/,"",key)
+        val=$2; sub(/#.*/,"",val); gsub(/^[[:space:]]+|[[:space:]]+$/,"",val)
+        if (key==r && val!="") { print val; exit } }' "$PROFILES")"
+  fi
+  VOICE="${VOICE:-$DEFAULT_VOICE}"
+fi
+
+PAYLOAD=$(VOICE="$VOICE" TEXT="$TEXT" EXAG="$EXAG" CFG="$CFG" TEMP="$TEMP" SPEED="$SPEED" python3 -c '
+import json, os
+d = {"text": os.environ["TEXT"], "voice": os.environ["VOICE"]}
+for env, key in (("EXAG","exaggeration"),("CFG","cfg_weight"),("TEMP","temperature"),("SPEED","speed")):
+    v = os.environ.get(env, "").strip()
+    if v:
+        try: d[key] = float(v)
+        except ValueError: pass
+print(json.dumps(d))
+')
+
+TMP=$(mktemp /tmp/jetson-voice-say.XXXXXX.wav)
+(
+  if curl -sf --connect-timeout 2 -m 60 -X POST "$TTS_URL/synthesize" \
+        -H "Content-Type: application/json" -d "$PAYLOAD" \
+        --output "$TMP" 2>/dev/null && [ -s "$TMP" ]; then
+    curl -sf --connect-timeout 2 -m 30 -X POST "$LISTENER_URL/play" \
+        -H "Content-Type: audio/wav" --data-binary "@$TMP" >/dev/null 2>&1
+  fi
+  rm -f "$TMP"
+) </dev/null >/dev/null 2>&1 &
+disown 2>/dev/null || true
+exit 0

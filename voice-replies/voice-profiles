@@ -1,0 +1,26 @@
+# voice-profiles — per-repo narration voices for voice-say / jetson-voice-say.
+#
+# Canonical, machine-agnostic map. The SAME file is deployed to every machine
+# (Mac and Jetson) so a given repo speaks in the same voice everywhere — you
+# recognise the project by ear, regardless of which box is running the session.
+# Repos that only exist on one machine just sit unused in the other's copy.
+#
+# Format: one "repo: voice" line per repo, where "repo" is the git-toplevel
+# basename (the same name voice-say prepends to every narration). Unmapped
+# repos fall back to devnen-elena. An explicit voice arg to voice-say overrides.
+#
+# Audition a voice:  afplay <(curl -s http://192.168.1.200:18080/previews/<voice>.wav)
+# List all 36:       curl -s http://192.168.1.200:18080/voices | python3 -m json.tool
+# Swap = edit the line + save. Takes effect on the next call, no restart.
+# Voices tagged (vetted) are quality-checked; the rest are male/female-contrast
+# picks — swap freely once you've heard them.
+
+maclocalai:            devnen-elena      # (vetted) female, calm — default
+dbexpertai.com:        devnen-austin     # (vetted) male
+content:               davidk-drive      # (vetted) David's own voice — aka "Winnow"
+winnow:                davidk-drive      # alias: when the content repo is renamed to winnow
+dbdiagnostics:         devnen-henry      # male
+jetsonlocalai:         devnen-gianna     # female
+relational-dba-plugin: devnen-julian     # male
+telaviv-doctor.com:    devnen-layla      # female
+testserver:            devnen-miles      # male
