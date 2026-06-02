@@ -36,10 +36,18 @@ fi
 
 # --- 2. Jetson narration wrapper (Linux only) -------------------------------
 if [ "$(uname)" = "Linux" ]; then
-  VOICE_SAY_DEST="${HOOKS_DIR}/voice-say"
-  step "Installing jetson-voice-say to ${VOICE_SAY_DEST}"
-  cp "${THIS_DIR}/jetson-voice-say" "${VOICE_SAY_DEST}"
-  chmod +x "${VOICE_SAY_DEST}"
+  # Install under BOTH names: voice-say (the canonical trigger path, matching
+  # the Mac wrapper) and jetson-voice-say (the legacy name still referenced by
+  # the Jetson ~/.claude/CLAUDE.md narration rules). Keeping both current means
+  # whichever path a session calls, it gets the per-repo voice resolution —
+  # otherwise a stale jetson-voice-say silently shadows the map and narrates in
+  # the hardcoded default voice.
+  for name in voice-say jetson-voice-say; do
+    VOICE_SAY_DEST="${HOOKS_DIR}/${name}"
+    step "Installing jetson-voice-say to ${VOICE_SAY_DEST}"
+    cp "${THIS_DIR}/jetson-voice-say" "${VOICE_SAY_DEST}"
+    chmod +x "${VOICE_SAY_DEST}"
+  done
   cat <<EOF
 
 Done (Jetson). Narration on this box now:
