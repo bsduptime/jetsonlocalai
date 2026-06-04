@@ -27,6 +27,16 @@ MAX_EMAILS = 10
 # confirmation gate + rate limit) can't mint an absurd invoice amount.
 MAX_QUANTITY = 1_000_000
 MAX_UNIT_PRICE = 100_000_000
+
+# Receipt logic. A receipt (400 קבלה) and an invoice+receipt (320) record HOW
+# money was received via `payment` rows; a standalone receipt may carry no
+# line items. A plain tax invoice (305) has income only — payment belongs on
+# its receipt, not on it.
+PAYMENT_REQUIRED_TYPES = {320, 400}
+INCOME_OPTIONAL_TYPES = {400}
+# GreenInvoice PaymentType: -1 not-paid, 0 deduction-at-source, 1 cash,
+# 2 cheque, 3 credit-card, 4 bank-transfer, 5 paypal, 10 app, 11 other.
+VALID_PAYMENT_TYPES = {-1, 0, 1, 2, 3, 4, 5, 10, 11}
 DATE_RE_FIELDS = ("date", "dueDate")
 
 
@@ -155,6 +165,43 @@ def _build_income(rows: Any) -> list[dict]:
     return out
 
 
+def _build_payment(rows: Any) -> list[dict]:
+    """Validate + build the `payment` rows of a receipt (how money came in)."""
+    if not isinstance(rows, list) or not rows:
+        raise InvalidInput("missing_field", "payment")
+    if len(rows) > MAX_INCOME_ROWS:
+        raise InvalidInput("too_many_payment_rows", "payment")
+    out = []
+    for i, row in enumerate(rows):
+        if not isinstance(row, dict):
+            raise InvalidInput("invalid_payment_row", str(i))
+        date = _date(row, "date", required=True)
+        ptype = row.get("type")
+        if isinstance(ptype, bool) or not isinstance(ptype, int) \
+                or ptype not in VALID_PAYMENT_TYPES:
+            raise InvalidInput("invalid_payment_type", f"payment[{i}].type")
+        price = _num(row.get("price"), f"payment[{i}].price")
+        if price < 0 or price > MAX_UNIT_PRICE:
+            raise InvalidInput("invalid_price", f"payment[{i}].price")
+        item = {
+            "date": date,
+            "type": ptype,
+            "price": price,
+            "currency": _currency(row.get("currency"), f"payment[{i}].currency"),
+        }
+        # Optional method-specific details (cheque no., bank, card, txn ref).
+        for opt in ("bankName", "bankBranch", "bankAccount", "chequeNum",
+                    "transactionId", "cardNum", "accountId"):
+            v = _req_str(row, opt, maxlen=64, required=False)
+            if v is not None:
+                item[opt] = v
+        for opt_int in ("cardType", "dealType", "numPayments", "firstPayment"):
+            if row.get(opt_int) is not None:
+                item[opt_int] = _int_field(row, opt_int)
+        out.append(item)
+    return out
+
+
 def _resolve_client_block(args: dict, *, email_to_client: bool,
                           for_issue: bool) -> dict:
     """Build the document's `client` block.
@@ -230,8 +277,24 @@ def build_document(args: dict, *, for_issue: bool) -> dict:
         "currency": _currency(args.get("currency", "ILS")),
         "lang": _lang(args.get("lang", "he")),
         "vatType": _int_field(args, "vatType", default=0),
-        "income": _build_income(args.get("income")),
     }
+
+    # Income (line items): required for everything except a standalone
+    # receipt (400), which may acknowledge a payment with no line items.
+    income_rows = args.get("income")
+    if doc_type in INCOME_OPTIONAL_TYPES and not income_rows:
+        pass
+    else:
+        body["income"] = _build_income(income_rows)
+
+    # Payment (how money was received): required for receipt-bearing docs
+    # (400 receipt, 320 invoice+receipt); rejected on documents that don't
+    # record payment (e.g. a plain 305 tax invoice) so it can't be smuggled on.
+    payment_rows = args.get("payment")
+    if doc_type in PAYMENT_REQUIRED_TYPES:
+        body["payment"] = _build_payment(payment_rows)
+    elif payment_rows:
+        raise InvalidInput("payment_not_allowed_for_type", str(doc_type))
 
     date = _date(args, "date", required=False)
     if date:

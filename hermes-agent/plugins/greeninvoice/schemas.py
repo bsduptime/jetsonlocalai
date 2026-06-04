@@ -57,10 +57,32 @@ _INCOME_ROW = {
     "additionalProperties": False,
 }
 
+_PAYMENT_ROW = {
+    "type": "object",
+    "description": "One payment received (for receipts: type 400 and 320).",
+    "properties": {
+        "date": {"type": "string", "description": "Date money was received, YYYY-MM-DD."},
+        "type": {"type": "integer", "description": "Payment method: 1=cash, 2=cheque, 3=credit card, 4=bank transfer, 5=paypal, 10=app, 11=other, 0=deduction at source, -1=not paid."},
+        "price": {"type": "number", "description": "Amount received in `currency`."},
+        "currency": {"type": "string", "description": "3-letter currency code, e.g. ILS."},
+        "bankName": {"type": "string"},
+        "bankBranch": {"type": "string"},
+        "bankAccount": {"type": "string"},
+        "chequeNum": {"type": "string", "description": "Cheque number (for type 2)."},
+        "transactionId": {"type": "string", "description": "Transfer/transaction reference."},
+        "cardType": {"type": "integer"},
+        "cardNum": {"type": "string", "description": "Last digits of the card (for type 3)."},
+        "numPayments": {"type": "integer", "description": "Number of card installments."},
+    },
+    "required": ["date", "type", "price", "currency"],
+    "additionalProperties": False,
+}
+
 _DOC_FIELDS = {
     "type": {"type": "integer", "description": "Document type code (see tool description). Drafts: 10/300/305/320/400. Issue: 305/320/400."},
     "client": _CLIENT_BLOCK,
-    "income": {"type": "array", "items": _INCOME_ROW, "description": "Line items (at least one)."},
+    "income": {"type": "array", "items": _INCOME_ROW, "description": "Line items. Required for 305/320 (and quotes/proformas). Optional for a standalone 400 receipt."},
+    "payment": {"type": "array", "items": _PAYMENT_ROW, "description": "Payments received. REQUIRED for a receipt (400) and an invoice+receipt (320); must NOT be set on a plain 305 tax invoice. Each row says how the money came in (method, amount, date)."},
     "currency": {"type": "string", "description": "Document currency (3-letter). Default ILS."},
     "vatType": {"type": "integer", "description": "Document-level VAT type. Default 0."},
     "lang": {"type": "string", "enum": ["he", "en"], "description": "Document language. Default he."},
@@ -128,7 +150,12 @@ GI_ISSUE_INVOICE = {
         "(3/hour, 10/day). Set email_to_client=true to also email it to the "
         "client. ALWAYS draft with gi_draft_invoice and get David's explicit "
         "go-ahead first. Returns the created document id/number plus remaining "
-        "quota."
+        "quota.\n"
+        "To issue a RECEIPT for money already received, use type 400 with a "
+        "`payment` array (method/amount/date) and no line items needed; set "
+        "`linkedDocumentId` to the invoice it pays off if it settles a prior "
+        "305. For invoice-and-receipt-in-one (paid on the spot), use type 320 "
+        "with both `income` and `payment`."
     ),
     "parameters": {
         "type": "object",

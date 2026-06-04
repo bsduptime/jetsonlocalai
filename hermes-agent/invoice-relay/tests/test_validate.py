@@ -28,8 +28,15 @@ def test_issue_rejects_non_issuable_type():
 
 
 def test_issue_accepts_issuable_types():
-    for t in (305, 320, 400):
-        body = validate.build_document(_doc(type=t), for_issue=True)
+    pay = [{"date": "2026-06-03", "type": 1, "price": 1170, "currency": "ILS"}]
+    cases = {
+        305: _doc(type=305),                                  # income only
+        320: _doc(type=320, payment=pay),                     # income + payment
+        400: {"type": 400, "client": {"id": "cli_1"},         # payment only
+              "currency": "ILS", "payment": pay},
+    }
+    for t, args in cases.items():
+        body = validate.build_document(args, for_issue=True)
         assert body["type"] == t
 
 
@@ -107,7 +114,10 @@ def test_inline_client_defaults_to_not_added():
 
 def test_linked_document_id_for_receipt():
     body = validate.build_document(
-        _doc(type=400, linkedDocumentId="doc_99"), for_issue=True)
+        {"type": 400, "client": {"id": "cli_1"}, "currency": "ILS",
+         "payment": [{"date": "2026-06-03", "type": 1, "price": 100,
+                      "currency": "ILS"}], "linkedDocumentId": "doc_99"},
+        for_issue=True)
     assert body["linkedDocumentIds"] == ["doc_99"]
 
 
@@ -154,6 +164,73 @@ def test_quantity_upper_bound():
                           "quantity": validate.MAX_QUANTITY + 1,
                           "price": 1, "currency": "ILS"}]), for_issue=True)
     assert ei.value.reason == "invalid_quantity"
+
+
+def _payment(**over):
+    p = {"date": "2026-06-03", "type": 4, "price": 1180, "currency": "ILS"}
+    p.update(over)
+    return p
+
+
+def test_receipt_400_requires_payment_but_not_income():
+    # Standalone receipt: payment required, income optional.
+    body = validate.build_document(
+        {"type": 400, "client": {"id": "cli_1"}, "currency": "ILS",
+         "payment": [_payment()]}, for_issue=True)
+    assert body["type"] == 400
+    assert body["payment"][0]["type"] == 4
+    assert "income" not in body  # no line items needed
+
+
+def test_receipt_400_without_payment_rejected():
+    with pytest.raises(InvalidInput) as ei:
+        validate.build_document(
+            {"type": 400, "client": {"id": "cli_1"}, "currency": "ILS"},
+            for_issue=True)
+    assert ei.value.reason == "missing_field"
+    assert ei.value.detail == "payment"
+
+
+def test_receipt_400_linked_to_invoice():
+    body = validate.build_document(
+        {"type": 400, "client": {"id": "cli_1"}, "currency": "ILS",
+         "payment": [_payment()], "linkedDocumentId": "inv_99"},
+        for_issue=True)
+    assert body["linkedDocumentIds"] == ["inv_99"]
+
+
+def test_320_requires_both_income_and_payment():
+    base = {"type": 320, "client": {"id": "cli_1"}, "currency": "ILS",
+            "income": [{"description": "x", "quantity": 1, "price": 1000,
+                        "currency": "ILS"}]}
+    with pytest.raises(InvalidInput) as ei:
+        validate.build_document(base, for_issue=True)  # no payment
+    assert ei.value.reason == "missing_field" and ei.value.detail == "payment"
+    body = validate.build_document({**base, "payment": [_payment()]}, for_issue=True)
+    assert body["income"] and body["payment"]
+
+
+def test_payment_rejected_on_305():
+    with pytest.raises(InvalidInput) as ei:
+        validate.build_document(_doc(payment=[_payment()]), for_issue=True)
+    assert ei.value.reason == "payment_not_allowed_for_type"
+
+
+def test_invalid_payment_type_rejected():
+    with pytest.raises(InvalidInput) as ei:
+        validate.build_document(
+            {"type": 400, "client": {"id": "cli_1"}, "currency": "ILS",
+             "payment": [_payment(type=99)]}, for_issue=True)
+    assert ei.value.reason == "invalid_payment_type"
+
+
+def test_payment_optional_details_pass_through():
+    body = validate.build_document(
+        {"type": 400, "client": {"id": "cli_1"}, "currency": "ILS",
+         "payment": [_payment(type=2, chequeNum="00123", bankName="Leumi")]},
+        for_issue=True)
+    row = body["payment"][0]
+    assert row["chequeNum"] == "00123" and row["bankName"] == "Leumi"
 
 
 def test_client_create_requires_name():
