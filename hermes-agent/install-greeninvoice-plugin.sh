@@ -71,6 +71,30 @@ else
     echo "linked $SYMLINK -> $PLUGIN_SRC"
 fi
 
+# ----------------------------------------------------------------------------
+# Allowlist the daemon's preview dir for Hermes' Telegram/media delivery.
+# Draft previews are written to /run/hermes-greeninvoice/previews, but Hermes
+# refuses to attach files outside its media allowlist. Add that dir via a
+# systemd drop-in on the hermes gateway — but NEVER clobber an existing
+# HERMES_MEDIA_ALLOW_DIRS value (warn instead, so the operator can merge).
+# ----------------------------------------------------------------------------
+PREVIEWS_DIR=/run/hermes-greeninvoice/previews
+DROPIN_DIR=/etc/systemd/system/hermes.service.d
+DROPIN="$DROPIN_DIR/greeninvoice-previews.conf"
+CUR_ENV=$(systemctl show hermes -p Environment 2>/dev/null | sed 's/^Environment=//' | tr ' ' '\n')
+if printf '%s\n' "$CUR_ENV" | grep -q "HERMES_MEDIA_ALLOW_DIRS=.*$PREVIEWS_DIR"; then
+    echo "media allowlist already includes $PREVIEWS_DIR (ok)"
+elif printf '%s\n' "$CUR_ENV" | grep -q "^HERMES_MEDIA_ALLOW_DIRS="; then
+    echo "WARNING: hermes already sets HERMES_MEDIA_ALLOW_DIRS without $PREVIEWS_DIR." >&2
+    echo "         Append it manually (keep the existing value) in a drop-in, e.g.:" >&2
+    echo "         HERMES_MEDIA_ALLOW_DIRS=<existing>:$PREVIEWS_DIR" >&2
+else
+    install -d "$DROPIN_DIR"
+    printf '[Service]\nEnvironment="HERMES_MEDIA_ALLOW_DIRS=%s"\n' "$PREVIEWS_DIR" > "$DROPIN"
+    systemctl daemon-reload
+    echo "wrote $DROPIN — allowlists $PREVIEWS_DIR for Hermes (restart hermes to apply)"
+fi
+
 cat <<EOF
 
 ========================================================================
@@ -85,10 +109,18 @@ cat <<EOF
  The plugin holds no credentials. All policy + the API key live in the
  hermes-greeninvoice daemon. No extra Python deps (stdlib only).
 
- Reload Hermes so the plugin is picked up:
+ Enable + load the plugin (a symlink alone is NOT enough — Hermes needs an
+ explicit enable, and plugin tools register per SESSION, not at boot):
+   sudo -u hermes -i hermes plugins enable greeninvoice
    sudo systemctl restart hermes
-   sudo -u hermes -i hermes plugins list
-   sudo -u hermes -i hermes tools list   # should show gi_draft_invoice, gi_issue_invoice, ...
+   sudo -u hermes -i hermes plugins list           # greeninvoice -> enabled
+   # then start a NEW session (e.g. /new in Telegram) — the gi_* tools only
+   # appear inside a session, so 'hermes tools list' (run outside one) won't
+   # show them even when everything is correct.
+
+ Preview/receipt PDFs are written to /run/hermes-greeninvoice/previews and
+ this script allowlists that dir for Hermes media delivery (above). Without
+ it, Hermes can read the PDF but refuses to attach it to Telegram.
 
 ========================================================================
 EOF

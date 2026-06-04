@@ -131,9 +131,15 @@ the `hermes` user can read it, and replaces `result.file` with
 `result.preview_pdf_path` + `result.preview_pdf_bytes`. The agent hands that
 path to its delivery channel (mailer attachment / Telegram). Files are
 ephemeral: pruned by age (`GI_PREVIEW_RETENTION_SECONDS`, default 1h) and
-count (`GI_PREVIEW_MAX_FILES`, default 50), and cleared on reboot. To attach
-a preview via the mailer, add `/run/hermes-greeninvoice/previews/` to that
-plugin's `EMAIL_ATTACHMENT_ALLOWED_PREFIXES`.
+count (`GI_PREVIEW_MAX_FILES`, default 50), and cleared on reboot.
+
+Delivery note: the consuming agent must be allowed to read+attach files from
+that dir. For Hermes' Telegram/media layer, add it to
+`HERMES_MEDIA_ALLOW_DIRS` (the plugin installer writes a hermes.service.d
+drop-in for this). To attach a preview via the mailer, add
+`/run/hermes-greeninvoice/previews/` to that plugin's
+`EMAIL_ATTACHMENT_ALLOWED_PREFIXES`. Without the allowlist entry the agent can
+read the PDF but refuses to attach it.
 
 ### Response envelope
 

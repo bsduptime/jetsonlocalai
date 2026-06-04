@@ -91,6 +91,24 @@ Default is **sandbox + dry-run**: the daemon validates, rate-limits, and
 audits every call but makes no live API request until you set
 `GI_DRY_RUN=false`.
 
+### Enabling + delivering previews
+
+A symlinked plugin is only *discovered* — Hermes needs an explicit enable, and
+plugin tools register **per session**, not at boot:
+
+```bash
+sudo -u hermes -i hermes plugins enable greeninvoice
+sudo systemctl restart hermes
+# then start a NEW session (/new in Telegram) — gi_* tools appear only inside
+# a session, so `hermes tools list` (run outside one) won't show them.
+```
+
+Draft/receipt previews are written to `/run/hermes-greeninvoice/previews`.
+Hermes refuses to attach files outside its media allowlist, so the plugin
+installer adds that dir to `HERMES_MEDIA_ALLOW_DIRS` via a `hermes.service.d`
+drop-in. To email previews via the mailer instead, add the dir to that
+plugin's `EMAIL_ATTACHMENT_ALLOWED_PREFIXES`.
+
 ## Tests
 
 ```bash
