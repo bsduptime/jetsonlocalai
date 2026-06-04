@@ -1,0 +1,84 @@
+[Unit]
+# hermes-greeninvoice — privilege-separated GreenInvoice (Morning) broker.
+# Holds the GreenInvoice API key and enforces per-caller, per-action rate
+# limits. Hermes' greeninvoice plugin talks to this daemon over a Unix
+# socket and never sees the credentials.
+# See hermes-agent/invoice-relay/PROTOCOL.md for the design contract.
+Description=hermes-greeninvoice (privilege-separated GreenInvoice broker)
+Documentation=file:///home/dbexpertai/code/jetsonlocalai/hermes-agent/invoice-relay/PROTOCOL.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# DynamicUser: transient `hermes-greeninvoice` user, no persistent UID, no
+# login shell. Owns the process; reads the API key via the config group.
+DynamicUser=yes
+# hermes-greeninvoice-clients : the daemon owns this group on the UDS so
+#                               members (hermes user) can connect().
+# hermes-greeninvoice-config  : grants READ on /etc/hermes-greeninvoice/.
+# The hermes user is in clients but NOT in config — she can talk to the
+# socket but cannot read the API key.
+SupplementaryGroups=hermes-greeninvoice-clients hermes-greeninvoice-config
+
+ConfigurationDirectory=hermes-greeninvoice
+ConfigurationDirectoryMode=0750
+StateDirectory=hermes-greeninvoice
+StateDirectoryMode=0700
+RuntimeDirectory=hermes-greeninvoice
+RuntimeDirectoryMode=0750
+
+WorkingDirectory=%S/hermes-greeninvoice
+Environment="HERMES_GREENINVOICE_CONFIG_DIR=/etc/hermes-greeninvoice"
+Environment="HERMES_GREENINVOICE_STATE_DIR=/var/lib/hermes-greeninvoice"
+Environment="HERMES_GREENINVOICE_RUNTIME_DIR=/run/hermes-greeninvoice"
+Environment="HERMES_GREENINVOICE_LOG_LEVEL=INFO"
+Environment="PYTHONPATH=/usr/local/lib/hermes-greeninvoice"
+
+ExecStart=/usr/bin/python3 -m hermes_greeninvoice.daemon
+
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=40
+
+# ---- filesystem isolation ----
+ProtectHome=yes
+ProtectSystem=strict
+ReadOnlyPaths=/etc/hermes-greeninvoice /usr/local/lib/hermes-greeninvoice
+PrivateTmp=true
+PrivateDevices=true
+
+# ---- kernel + privilege hardening ----
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+
+NoNewPrivileges=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictNamespaces=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# Network: AF_INET/INET6 for HTTPS egress to api.greeninvoice.co.il;
+# AF_UNIX for the UDS we accept on.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+SystemCallFilter=@system-service
+SystemCallFilter=~@mount @debug @cpu-emulation @obsolete @raw-io @reboot @swap
+SystemCallErrorNumber=EPERM
+
+# Small footprint: no attachments, small JSON in/out.
+MemoryMax=256M
+TasksMax=32
+
+# Auxiliary daemon — kill before Hermes itself on OOM.
+OOMScoreAdjust=200
+
+[Install]
+WantedBy=multi-user.target
