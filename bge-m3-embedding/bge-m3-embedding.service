@@ -1,0 +1,24 @@
+[Unit]
+Description=bge-m3 Embedding Server (OpenAI-compatible + hybrid)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dbexpertai
+Group=dbexpertai
+WorkingDirectory=/mnt/sdcard/jetsonlocalai
+ExecStart=/mnt/sdcard/jetsonlocalai/venv/bin/python /mnt/sdcard/jetsonlocalai/server.py
+Restart=on-failure
+RestartSec=10
+# Give the model time to load from cache before systemd considers startup hung.
+TimeoutStartSec=300
+Environment=PYTHONUNBUFFERED=1
+Environment=HF_HOME=/mnt/sdcard/.cache/huggingface
+Environment=HF_HUB_OFFLINE=1
+Environment=TRANSFORMERS_OFFLINE=1
+Environment=BGE_HOST=0.0.0.0
+Environment=BGE_PORT=11435
+
+[Install]
+WantedBy=multi-user.target

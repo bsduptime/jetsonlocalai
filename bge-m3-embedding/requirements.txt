@@ -1,0 +1,18 @@
+# bge-m3 embedding service — pinned to the proven aarch64/Jetson reference env
+# (replicates /home/dbexpertai/code/dbexpertai.com/backend/.venv where
+#  `import torch, FlagEmbedding` is known to work on python3.10).
+#
+# torch 2.2.2 here is the standard PyPI manylinux2014_aarch64 CPU wheel
+# (cuda build None) — no Jetson-specific index needed.
+torch==2.2.2
+numpy==1.26.4
+FlagEmbedding==1.2.11
+transformers==4.38.0
+sentence-transformers==2.5.0
+peft==0.9.0
+tokenizers==0.15.2
+safetensors==0.7.0
+huggingface_hub==0.36.2
+fastapi==0.110.0
+uvicorn==0.28.0
+pydantic==2.6.0
