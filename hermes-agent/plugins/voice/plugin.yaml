@@ -1,0 +1,14 @@
+name: voice
+version: 0.1.0
+description: |
+  Speak a short message aloud to David through his Mac. Hermes (Elena)
+  synthesizes the text locally on the Jetson TTS server in her own voice
+  (devnen-elena) and ships the audio to the Mac voice-listener over
+  Tailscale, where it plays through the speakers. Best-effort and fire-and-
+  forget: there is no microphone / no reply channel — this is a one-way
+  "say this out loud" notification, not a conversation. Use it sparingly for
+  things worth interrupting David for (a finished long task, a blocker, an
+  alert), not for chit-chat.
+author: David Klippel
+provides_tools:
+  - speak_to_david
