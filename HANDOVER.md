@@ -1,5 +1,11 @@
 # Handover — Jetson storage expansion (2026-06-26)
 
+> ✅ **COMPLETED 2026-06-27.** The 2 TB HDD is formatted/mounted/auto-mounting, the eMMC was
+> freed (97% → 92%), the SD freed (75% → 45%), 64 GB of trapped FLUX weights were rescued to the
+> HDD, and a full 4-tier backup system (local DB snapshots, weekly encrypted restic to NAS,
+> docker-image archive, monthly bootable image) is in place. **See [`docs/storage-and-backup.md`](docs/storage-and-backup.md)**
+> for the resulting system and operational scripts. The original pick-up notes below are kept as history.
+
 Pick-up doc for continuing the storage work **on the Jetson**. Pull this repo on the
 Jetson and keep going. Written from a Mac session; the hands-on part runs on the Jetson.
 

@@ -8,10 +8,10 @@
 # version that tried to run as dbexpertai+narrow-sudoers and broke on
 # multi-arg command patterns.
 #
-# Backups land in /mnt/sdcard/hermes-db-backups/ (root:dbexpertai mode 750:
+# Backups land in /mnt/transcend/hermes-db-backups/ (root:dbexpertai mode 750:
 # david can list + read them without sudo; only root can write/delete). The
-# SD card keeps snapshots off the eMMC root. Logs land in
-# /var/log/hermes-db-guard/ (same ownership).
+# 2TB HDD keeps snapshots off the eMMC root (live DB lives on eMMC) and off
+# the SD card. Logs land in /var/log/hermes-db-guard/ (same ownership).
 #
 # Why this exists:
 #   Hermes v0.14.0 has known WAL/FD-leak kanban corruption bugs (upstream
@@ -34,7 +34,7 @@
 set -u
 
 HERMES_HOME=/home/hermes/.hermes
-BACKUP_ROOT=/mnt/sdcard/hermes-db-backups
+BACKUP_ROOT=/mnt/transcend/hermes-db-backups
 LOG_DIR=/var/log/hermes-db-guard
 ALERT_LOG="$LOG_DIR/alerts.log"
 VOICE_HOOK=/home/dbexpertai/.claude/hooks/jetson-voice-say
