@@ -1,36 +1,82 @@
-# hermes-calendar relay — the daemon behind the calendar plugin.
-#
-# Holds the Google token; the agent only ever talks to it over the UDS and
-# never sees credentials. For STRONGER isolation of the Google token from the
-# hermes user (recommended once live), mirror mail-relay's DynamicUser pattern
-# — start here running as `hermes` to get it working, then harden.
-#
-# Edit WorkingDirectory to wherever this repo lives on the Jetson, then:
-#   sudo cp hermes-calendar.service /etc/systemd/system/
-#   sudo systemctl daemon-reload && sudo systemctl enable --now hermes-calendar
-
 [Unit]
-Description=hermes-calendar relay (calendar plugin backend)
+# hermes-calendar — privilege-separated calendar broker for Hermes/Elena and
+# other local agents. Creates events + invites; holds the Google token so the
+# agent never sees it. Elena's familycal plugin talks to this over a UDS and
+# never sees credentials. Mirrors hermes-mailer's isolation model.
+# See hermes-agent/calendar-relay/README.md for the design contract.
+Description=hermes-calendar (privilege-separated calendar broker)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-User=hermes
-Group=hermes
+
+# Transient user, torn down on stop. No persistent UID / no login shell.
+DynamicUser=yes
+# clients : who can connect() to the UDS (the hermes user / Elena is in this).
+# config  : who can READ /etc/hermes-calendar (contacts + OAuth client secret).
+# The daemon is in BOTH; Elena is in clients ONLY — she can talk to the socket
+# but cannot read the Google credentials.
+SupplementaryGroups=hermes-calendar-clients hermes-calendar-config
+
+# /etc/hermes-calendar — contacts.yaml, .env, OAuth *client* secret (read-only).
+ConfigurationDirectory=hermes-calendar
+ConfigurationDirectoryMode=0750
+# /var/lib/hermes-calendar — audit log, dry-run dumps, and the *user token*
+# (the daemon refreshes it, so it must be writable — and it stays unreadable
+# to Elena because StateDirectory is owned by this dynamic user, mode 0700).
+StateDirectory=hermes-calendar
+StateDirectoryMode=0700
+# /run/hermes-calendar — the UDS socket.
 RuntimeDirectory=hermes-calendar
 RuntimeDirectoryMode=0750
-EnvironmentFile=/home/hermes/.hermes/calendar-plugin/.env
-Environment=HERMES_CALENDAR_SOCKET=/run/hermes-calendar/sock
-# CHANGE THIS to the repo's calendar-relay dir on the Jetson:
-WorkingDirectory=/home/dbexpertai/code/jetsonlocalai/hermes-agent/calendar-relay
-ExecStart=/usr/bin/env python3 -m hermes_calendar.server
-NoNewPrivileges=yes
-PrivateTmp=yes
-ProtectSystem=strict
-ReadWritePaths=/home/hermes/.hermes/calendar-plugin /run/hermes-calendar
+
+WorkingDirectory=%S/hermes-calendar
+EnvironmentFile=/etc/hermes-calendar/.env
+Environment="HERMES_CALENDAR_SOCKET=/run/hermes-calendar/sock"
+Environment="HERMES_CALENDAR_CLIENTS_GROUP=hermes-calendar-clients"
+Environment="CALENDAR_CONTACTS_FILE=/etc/hermes-calendar/contacts.yaml"
+Environment="CALENDAR_STATE_DIR=/var/lib/hermes-calendar"
+Environment="PYTHONPATH=/usr/local/lib/hermes-calendar"
+
+ExecStart=/usr/bin/python3 -m hermes_calendar.server
+
 Restart=on-failure
-RestartSec=2
+RestartSec=10
+TimeoutStopSec=30
+
+# --- filesystem isolation ---
+ProtectHome=yes
+ProtectSystem=strict
+ReadOnlyPaths=/etc/hermes-calendar /usr/local/lib/hermes-calendar
+PrivateTmp=true
+PrivateDevices=true
+
+# --- kernel + privilege hardening ---
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+NoNewPrivileges=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictNamespaces=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# AF_INET/INET6 for Google Calendar HTTPS (live mode); AF_UNIX for the UDS.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallFilter=@system-service
+SystemCallFilter=~@mount @debug @cpu-emulation @obsolete @raw-io @reboot @swap
+SystemCallErrorNumber=EPERM
+
+MemoryMax=256M
+TasksMax=32
+# Auxiliary daemon — OOM-kill before Elena herself.
+OOMScoreAdjust=200
 
 [Install]
 WantedBy=multi-user.target
