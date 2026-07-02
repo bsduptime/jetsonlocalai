@@ -1,0 +1,5 @@
+# Only needed for the LIVE Google transport (real event writes + invites).
+# The dry-run demo path uses stdlib only and needs none of these.
+google-api-python-client>=2.100
+google-auth-oauthlib>=1.2
+google-auth-httplib2>=0.2

@@ -11,3 +11,13 @@ hermes-agent/plugins/mailer/.env
 hermes-agent/plugins/mailer/allowlist.yaml
 hermes-agent/plugins/mailer/state/
 
+# familycal plugin + calendar-relay runtime (secrets/creds never in repo)
+hermes-agent/plugins/familycal/.env
+hermes-agent/plugins/familycal/state/
+hermes-agent/calendar-relay/.venv/
+hermes-agent/calendar-relay/state/
+hermes-agent/calendar-relay/contacts.yaml
+hermes-agent/calendar-relay/**/gcal-*.json
+gcal-token.json
+gcal-oauth-client.json
+

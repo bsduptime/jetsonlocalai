@@ -1,0 +1,14 @@
+name: familycal
+version: 0.1.0
+description: |
+  Create calendar events on a shared (e.g. family) calendar from natural
+  language, resolving named people to contacts and distinguishing real
+  participants (who get an invite) from FYI recipients (who are just told,
+  and are NOT put on the invite). Per-day event rate limit enforced by the
+  relay, not the model. Dry-run is the DEFAULT — nothing is written to any
+  real calendar and no invites are sent until CALENDAR_DRY_RUN=false and a
+  Google transport is configured in calendar-plugin/.env.
+author: David Klippel
+provides_tools:
+  - create_event
+  - list_contacts
