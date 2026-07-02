@@ -1,0 +1,36 @@
+# hermes-calendar relay — the daemon behind the calendar plugin.
+#
+# Holds the Google token; the agent only ever talks to it over the UDS and
+# never sees credentials. For STRONGER isolation of the Google token from the
+# hermes user (recommended once live), mirror mail-relay's DynamicUser pattern
+# — start here running as `hermes` to get it working, then harden.
+#
+# Edit WorkingDirectory to wherever this repo lives on the Jetson, then:
+#   sudo cp hermes-calendar.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now hermes-calendar
+
+[Unit]
+Description=hermes-calendar relay (calendar plugin backend)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=hermes
+Group=hermes
+RuntimeDirectory=hermes-calendar
+RuntimeDirectoryMode=0750
+EnvironmentFile=/home/hermes/.hermes/calendar-plugin/.env
+Environment=HERMES_CALENDAR_SOCKET=/run/hermes-calendar/sock
+# CHANGE THIS to the repo's calendar-relay dir on the Jetson:
+WorkingDirectory=/home/dbexpertai/code/jetsonlocalai/hermes-agent/calendar-relay
+ExecStart=/usr/bin/env python3 -m hermes_calendar.server
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=/home/hermes/.hermes/calendar-plugin /run/hermes-calendar
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

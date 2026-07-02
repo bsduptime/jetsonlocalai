@@ -1,0 +1,22 @@
+# hermes-calendar contacts. Copy to the plugin config dir as `contacts.yaml`.
+# The agent resolves names/aliases the user says ("elon", "my wife") to these.
+# default_role is only a HINT — the agent decides participant vs fyi from the
+# actual request. A person with no email can't be notified (reported as a warning).
+contacts:
+  - email: elon@example.com
+    name: Elon
+    aliases: [elon]
+    default_role: participant
+    note: climbing buddy
+
+  - email: lihi@example.com
+    name: Lihi
+    aliases: [lihi, wife, my wife]
+    default_role: fyi
+    note: spouse
+
+  - email: you@example.com
+    name: David
+    aliases: [me, david, myself]
+    default_role: participant
+    note: account owner
