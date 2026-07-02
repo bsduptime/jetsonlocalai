@@ -8,6 +8,7 @@ protocol the plugin's `_client` uses (see PROTOCOL.md).
 
 from __future__ import annotations
 
+import grp
 import json
 import os
 import socket
@@ -201,6 +202,22 @@ def make_server_socket(socket_path: str) -> socket.socket:
         os.chmod(socket_path, 0o660)
     except OSError:
         pass
+    # Lock the socket to a "clients" group so only its members (the hermes
+    # user / Elena) can connect() — mirrors mail-relay. Under DynamicUser the
+    # daemon's primary group is transient, so we chgrp to the stable clients
+    # group the daemon holds as a supplementary group. No-op if unset (dev).
+    clients_group = os.environ.get("HERMES_CALENDAR_CLIENTS_GROUP")
+    if clients_group:
+        try:
+            gid = grp.getgrnam(clients_group).gr_gid
+            os.chown(socket_path, -1, gid)
+            os.chmod(socket_path, 0o660)
+            # Retag the runtime dir so peeking requires group membership too.
+            parent = str(Path(socket_path).parent)
+            os.chown(parent, -1, gid)
+            os.chmod(parent, 0o750)
+        except (KeyError, OSError):
+            pass  # group missing / not permitted -> fall back to owner-only
     sock.listen(16)
     return sock
 
