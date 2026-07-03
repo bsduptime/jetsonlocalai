@@ -183,7 +183,9 @@ def _serve_socket(sock: socket.socket, cfg) -> None:
             payload = (json.dumps(resp, ensure_ascii=False,
                                   separators=(",", ":")) + "\n").encode("utf-8")
             conn.sendall(payload)
-        except OSError:
+        except Exception:
+            # One bad request (incl. an unexpected handler error) must never
+            # take the accept loop down — drop this connection and keep serving.
             pass
         finally:
             try:
