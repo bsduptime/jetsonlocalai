@@ -63,6 +63,22 @@ def _resolve_socket(socket_path: str | None) -> str:
             or DEFAULT_SOCKET_PATH)
 
 
+def _connect(addr: str, timeout: int) -> socket.socket:
+    """Open a stream socket to the relay. Supports a Unix path (Linux/macOS)
+    or a localhost TCP address `tcp://host:port` (Windows / portable)."""
+    if addr.startswith("tcp:"):
+        hp = addr[6:] if addr.startswith("tcp://") else addr[4:]
+        host, port = hp.rsplit(":", 1)
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(timeout)
+        s.connect(((host or "127.0.0.1"), int(port)))
+    else:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(timeout)
+        s.connect(addr)
+    return s
+
+
 def _roundtrip(envelope: dict, *, socket_path: str | None,
                timeout_seconds: int) -> dict:
     sock_path = _resolve_socket(socket_path)
@@ -70,9 +86,7 @@ def _roundtrip(envelope: dict, *, socket_path: str | None,
                + "\n").encode("utf-8")
 
     try:
-        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock.settimeout(timeout_seconds)
-        sock.connect(sock_path)
+        sock = _connect(sock_path, timeout_seconds)
     except FileNotFoundError:
         raise DaemonUnreachable("socket_missing", sock_path)
     except ConnectionRefusedError:

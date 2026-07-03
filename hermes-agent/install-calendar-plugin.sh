@@ -36,9 +36,14 @@ else
     echo "linked $SYMLINK -> $PLUGIN_SRC"
 fi
 
+# Hermes DISCOVERS plugins from the dir but leaves them DISABLED until enabled.
+echo "enabling familycal for the hermes user…"
+sudo -u hermes -i hermes plugins enable familycal \
+    || echo "  (enable failed — run manually: sudo -u hermes -i hermes plugins enable familycal)"
+
 cat <<EOF
 
- familycal plugin linked. Now restart Elena so she loads it:
+ familycal plugin linked + enabled. Now restart Elena so she loads it:
    sudo systemctl restart hermes
    sudo -u hermes -i hermes tools list      # expect create_event + list_contacts
 

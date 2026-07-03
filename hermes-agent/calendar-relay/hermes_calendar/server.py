@@ -8,7 +8,6 @@ protocol the plugin's `_client` uses (see PROTOCOL.md).
 
 from __future__ import annotations
 
-import grp
 import json
 import os
 import socket
@@ -16,6 +15,11 @@ import stat
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
+
+try:
+    import grp  # POSIX-only; used to group-gate the socket on Linux (the Jetson)
+except ImportError:  # Windows / non-POSIX (e.g. a client's Windows mini PC)
+    grp = None
 
 from . import event as event_mod
 from .transport import DryRunTransport, TransportError, make_transport
@@ -189,7 +193,29 @@ def _serve_socket(sock: socket.socket, cfg) -> None:
             conn.close()
 
 
+def _is_tcp(addr: str) -> bool:
+    return addr.startswith("tcp:")
+
+
+def _parse_tcp(addr: str) -> tuple[str, int]:
+    hp = addr[6:] if addr.startswith("tcp://") else addr[4:]
+    host, port = hp.rsplit(":", 1)
+    return (host or "127.0.0.1"), int(port)
+
+
 def make_server_socket(socket_path: str) -> socket.socket:
+    # Portable path (Windows, or anywhere without Unix sockets): bind a
+    # localhost TCP port instead. Set HERMES_CALENDAR_SOCKET=tcp://127.0.0.1:8765.
+    # NOTE: TCP has no group-gating — bind 127.0.0.1 only and rely on the host
+    # firewall. Fine for a single-family mini PC; on Linux prefer the UDS.
+    if _is_tcp(socket_path):
+        host, port = _parse_tcp(socket_path)
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind((host, port))
+        sock.listen(16)
+        return sock
+
     Path(socket_path).parent.mkdir(parents=True, exist_ok=True)
     try:
         if stat.S_ISSOCK(os.stat(socket_path).st_mode):
@@ -207,7 +233,7 @@ def make_server_socket(socket_path: str) -> socket.socket:
     # daemon's primary group is transient, so we chgrp to the stable clients
     # group the daemon holds as a supplementary group. No-op if unset (dev).
     clients_group = os.environ.get("HERMES_CALENDAR_CLIENTS_GROUP")
-    if clients_group:
+    if clients_group and grp is not None:
         try:
             gid = grp.getgrnam(clients_group).gr_gid
             os.chown(socket_path, -1, gid)
