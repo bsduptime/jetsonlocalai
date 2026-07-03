@@ -210,6 +210,15 @@ def make_server_socket(socket_path: str) -> socket.socket:
     # firewall. Fine for a single-family mini PC; on Linux prefer the UDS.
     if _is_tcp(socket_path):
         host, port = _parse_tcp(socket_path)
+        # TCP has no group-gating or auth, so refuse anything but loopback —
+        # binding a routable host would expose unauthenticated create/list of
+        # calendar events to the network. Loopback only; rely on the host
+        # firewall + single-user machine (the Windows mini-PC deploy).
+        if host not in ("127.0.0.1", "localhost", "::1"):
+            raise ValueError(
+                f"refusing to bind calendar relay TCP to non-loopback host {host!r}; "
+                "use 127.0.0.1 (TCP mode has no auth/group-gate)"
+            )
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.bind((host, port))

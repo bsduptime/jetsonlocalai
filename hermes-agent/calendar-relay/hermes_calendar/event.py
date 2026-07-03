@@ -81,17 +81,24 @@ def build_plan(req: dict, cfg) -> dict:
 
     invited, informed, unresolved = [], [], []
     for a in req.get("attendees") or []:
-        contact = resolve_attendee(a["ref"], cfg.contacts)
+        # A direct socket client (bypassing the validating plugin) can send a
+        # malformed attendee like {} — guard so it raises the handled PlanError
+        # path instead of a KeyError that would crash the daemon.
+        if not isinstance(a, dict) or not a.get("ref"):
+            raise PlanError("invalid_attendee")
+        ref = a["ref"]
+        role = a.get("role") or "participant"
+        contact = resolve_attendee(ref, cfg.contacts)
         if contact is None:
-            unresolved.append({"ref": a["ref"], "role": a["role"]})
+            unresolved.append({"ref": ref, "role": role})
             continue
         entry = {
-            "ref": a["ref"],
+            "ref": ref,
             "name": contact.get("name"),
             "email": contact.get("email") or None,
             "notify": bool(a.get("notify", True)),
         }
-        if a["role"] == "participant":
+        if role == "participant":
             invited.append(entry)
         else:
             informed.append(entry)
