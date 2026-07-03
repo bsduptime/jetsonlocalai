@@ -62,7 +62,7 @@ _PAYMENT_ROW = {
     "description": "One payment received (for receipts: type 400 and 320).",
     "properties": {
         "date": {"type": "string", "description": "Date money was received, YYYY-MM-DD."},
-        "type": {"type": "integer", "description": "Payment method: 1=cash, 2=cheque, 3=credit card, 4=bank transfer, 5=paypal, 10=app, 11=other, 0=deduction at source, -1=not paid."},
+        "type": {"type": "integer", "description": "Payment method: 1=cash, 2=cheque, 3=credit card, 4=bank transfer, 5=paypal, 10=payment app (also set appType: e.g. Bit), 11=other, 0=deduction at source, -1=not paid."},
         "price": {"type": "number", "description": "Amount received in `currency`."},
         "currency": {"type": "string", "description": "3-letter currency code, e.g. ILS."},
         "bankName": {"type": "string"},
@@ -73,6 +73,7 @@ _PAYMENT_ROW = {
         "cardType": {"type": "integer"},
         "cardNum": {"type": "string", "description": "Last digits of the card (for type 3)."},
         "numPayments": {"type": "integer", "description": "Number of card installments."},
+        "appType": {"type": "integer", "description": "Which payment app (use with type 10): 1=Bit, 2=Pepper Pay (discontinued), 3=PayBox. Use 1 for money received via Bit."},
     },
     "required": ["date", "type", "price", "currency"],
     "additionalProperties": False,

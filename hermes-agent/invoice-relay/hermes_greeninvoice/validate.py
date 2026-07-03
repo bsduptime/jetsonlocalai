@@ -35,8 +35,11 @@ MAX_UNIT_PRICE = 100_000_000
 PAYMENT_REQUIRED_TYPES = {320, 400}
 INCOME_OPTIONAL_TYPES = {400}
 # GreenInvoice PaymentType: -1 not-paid, 0 deduction-at-source, 1 cash,
-# 2 cheque, 3 credit-card, 4 bank-transfer, 5 paypal, 10 app, 11 other.
+# 2 cheque, 3 credit-card, 4 bank-transfer, 5 paypal, 10 payment-app, 11 other.
 VALID_PAYMENT_TYPES = {-1, 0, 1, 2, 3, 4, 5, 10, 11}
+# For a payment-app payment (type 10), `appType` names the app:
+# 1 Bit, 2 Pepper Pay (discontinued), 3 PayBox. 0 = unspecified.
+VALID_APP_TYPES = {0, 1, 2, 3}
 DATE_RE_FIELDS = ("date", "dueDate")
 
 
@@ -198,6 +201,12 @@ def _build_payment(rows: Any) -> list[dict]:
         for opt_int in ("cardType", "dealType", "numPayments", "firstPayment"):
             if row.get(opt_int) is not None:
                 item[opt_int] = _int_field(row, opt_int)
+        # Payment-app details: `appType` names the app (1=Bit, 3=PayBox).
+        if row.get("appType") is not None:
+            app = _int_field(row, "appType")
+            if app not in VALID_APP_TYPES:
+                raise InvalidInput("invalid_app_type", f"payment[{i}].appType")
+            item["appType"] = app
         out.append(item)
     return out
 

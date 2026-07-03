@@ -233,6 +233,25 @@ def test_payment_optional_details_pass_through():
     assert row["chequeNum"] == "00123" and row["bankName"] == "Leumi"
 
 
+def test_bit_payment_app_passes_through():
+    # Money received via Bit: payment app (type 10) + appType 1.
+    body = validate.build_document(
+        {"type": 400, "client": {"id": "cli_1"}, "currency": "ILS",
+         "payment": [_payment(type=10, appType=1)]},
+        for_issue=True)
+    row = body["payment"][0]
+    assert row["type"] == 10 and row["appType"] == 1
+
+
+def test_invalid_app_type_rejected():
+    with pytest.raises(InvalidInput) as ei:
+        validate.build_document(
+            {"type": 400, "client": {"id": "cli_1"}, "currency": "ILS",
+             "payment": [_payment(type=10, appType=99)]},
+            for_issue=True)
+    assert ei.value.reason == "invalid_app_type"
+
+
 def test_client_create_requires_name():
     with pytest.raises(InvalidInput) as ei:
         validate.build_client_create({"emails": ["a@b.com"]})
