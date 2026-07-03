@@ -22,13 +22,13 @@ def register(ctx) -> None:
     try:
         ctx.register_tool(
             name="create_event",
-            toolset="calendar",
+            toolset="familycal",
             schema=CREATE_EVENT,
             handler=create_event,
         )
         ctx.register_tool(
             name="list_contacts",
-            toolset="calendar",
+            toolset="familycal",
             schema=LIST_CONTACTS,
             handler=list_contacts,
         )
