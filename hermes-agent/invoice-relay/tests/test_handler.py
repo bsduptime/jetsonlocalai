@@ -112,7 +112,8 @@ def test_quota_lists_all_classes(load_cfg):
     resp = handler.handle(cfg=cfg, caller="elena",
                           request=_req("quota", {}), get_client=_no_client())
     assert resp["ok"] is True
-    assert set(resp["quotas"]) == {"issue", "draft", "client_write"}
+    assert set(resp["quotas"]) == {
+        "issue", "draft", "client_write", "expense_write", "expense_upload"}
     assert resp["env"] == "sandbox"
 
 

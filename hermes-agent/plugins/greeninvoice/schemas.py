@@ -308,8 +308,280 @@ GI_QUOTA = {
     "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
 }
 
+# ---- expenses (vendor-side ledger) ----------------------------------------
+#
+# Expense doc types: 10 invoice, 20 receipt, 30 invoice+receipt, 40 other.
+# Expense statuses: 10 Open (default on create), 20 Reported (locked to tax).
+# We create expenses OPEN and NEVER auto-report; close_expense (confirm-gated)
+# is the only path to Reported.
+
+_SUPPLIER_BLOCK = {
+    "type": "object",
+    "description": (
+        "The vendor. Either reference an existing supplier by `id` (resolve "
+        "first with gi_search_suppliers), or supply an inline supplier with at "
+        "least `name`."
+    ),
+    "properties": {
+        "id": {"type": "string", "description": "Existing supplier id."},
+        "name": {"type": "string", "description": "Supplier name."},
+        "taxId": {"type": "string", "description": "Supplier tax id / ח.פ / ע.מ."},
+        "emails": {"type": "array", "items": {"type": "string"}},
+        "address": {"type": "string"},
+        "city": {"type": "string"},
+        "zip": {"type": "string"},
+        "country": {"type": "string", "description": "2-letter ISO code, e.g. IL."},
+        "phone": {"type": "string"},
+        "mobile": {"type": "string"},
+        "contactPerson": {"type": "string"},
+    },
+    "additionalProperties": False,
+}
+
+_CLASSIFICATION_BLOCK = {
+    "type": "object",
+    "description": (
+        "Optional accounting classification (expense category). Resolve options "
+        "with gi_get_classifications; pass at least its `id`."
+    ),
+    "properties": {
+        "id": {"type": "string"},
+        "key": {"type": "string"},
+        "code": {"type": "string"},
+        "title": {"type": "string"},
+    },
+    "additionalProperties": False,
+}
+
+GI_UPLOAD_EXPENSE_FILE = {
+    "name": "gi_upload_expense_file",
+    "description": (
+        "Upload an invoice/receipt image or PDF to Morning so it OCRs the "
+        "document and creates an expense DRAFT with the source file attached. "
+        "Pass `path` = the local file path of the photo/PDF the user sent (the "
+        "path Hermes gives you for a received attachment). Only files inside "
+        "Hermes' allowed media dirs can be read. This does NOT create the final "
+        "expense: after uploading, find the parsed draft with "
+        "gi_search_expense_drafts, sanity-check the fields, run gi_search_expenses "
+        "to make sure it isn't a duplicate, then create the OPEN expense with "
+        "gi_create_expense. Rate-limited."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Local path to the invoice image/PDF."},
+        },
+        "required": ["path"],
+        "additionalProperties": False,
+    },
+}
+
+GI_CREATE_EXPENSE = {
+    "name": "gi_create_expense",
+    "description": (
+        "Create a business expense in Morning. It is created OPEN (status 10) "
+        "and is NOT reported to tax — it stays reviewable/editable until the "
+        "monthly review. ALWAYS run gi_search_expenses first (same supplier + "
+        "number + amount + date) to avoid duplicates. Resolve the supplier with "
+        "gi_search_suppliers (or gi_create_supplier). Loosely rate-limited. "
+        "Returns the new expense id."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "documentType": {"type": "integer", "description": "10 invoice, 20 receipt, 30 invoice+receipt, 40 other (default 40)."},
+            "amount": {"type": "number", "description": "Total amount in `currency` (incl. VAT unless vatType says otherwise)."},
+            "vat": {"type": "number", "description": "VAT amount (optional)."},
+            "vatType": {"type": "integer", "description": "0 before-VAT, 1 VAT-included, 2 exempt (optional)."},
+            "currency": {"type": "string", "description": "3-letter code. Default ILS."},
+            "currencyRate": {"type": "number", "description": "FX rate to ILS if not ILS (optional)."},
+            "paymentType": {"type": "integer", "description": "How it was paid: 1 cash, 2 cheque, 3 card, 4 transfer, 5 paypal, 10 app, 11 other, 0 deduction, -1 unpaid (optional)."},
+            "date": {"type": "string", "description": "Document date YYYY-MM-DD (optional)."},
+            "dueDate": {"type": "string", "description": "Due date YYYY-MM-DD (optional)."},
+            "reportingDate": {"type": "string", "description": "Tax reporting period date YYYY-MM-DD (optional)."},
+            "number": {"type": "string", "description": "The supplier's invoice/receipt number (optional but recommended — used for dedup)."},
+            "description": {"type": "string", "description": "Short description (optional)."},
+            "remarks": {"type": "string", "description": "Free-text remarks (optional)."},
+            "supplier": _SUPPLIER_BLOCK,
+            "accountingClassification": _CLASSIFICATION_BLOCK,
+        },
+        "required": ["amount", "supplier"],
+        "additionalProperties": False,
+    },
+}
+
+GI_SEARCH_EXPENSES = {
+    "name": "gi_search_expenses",
+    "description": (
+        "Search expenses. Read-only, unlimited. Use this to CHECK FOR "
+        "DUPLICATES before creating (filter by `supplierId`/`supplierName`, "
+        "`number`, `minAmount`/`maxAmount`, `fromDate`/`toDate`) and for the "
+        "monthly review (`fromDate`/`toDate`, `reported: false`). `paid` and "
+        "`reported` are booleans."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "supplierId": {"type": "string"},
+            "supplierName": {"type": "string"},
+            "number": {"type": "string"},
+            "fromDate": {"type": "string"},
+            "toDate": {"type": "string"},
+            "minAmount": {"type": "number"},
+            "maxAmount": {"type": "number"},
+            "description": {"type": "string"},
+            "accountingClassificationId": {"type": "string"},
+            "paid": {"type": "boolean"},
+            "reported": {"type": "boolean"},
+            "page": {"type": "integer"},
+            "pageSize": {"type": "integer"},
+        },
+        "additionalProperties": False,
+    },
+}
+
+GI_GET_EXPENSE = {
+    "name": "gi_get_expense",
+    "description": "Retrieve a single expense by id. Read-only, unlimited.",
+    "parameters": {
+        "type": "object",
+        "properties": {"id": {"type": "string"}},
+        "required": ["id"],
+        "additionalProperties": False,
+    },
+}
+
+GI_DELETE_EXPENSE = {
+    "name": "gi_delete_expense",
+    "description": (
+        "Delete an OPEN expense by id (e.g. one the user rejected in the "
+        "monthly review). Only works while the expense is Open — a reported "
+        "(status 20) expense cannot be deleted. Loosely rate-limited."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {"id": {"type": "string"}},
+        "required": ["id"],
+        "additionalProperties": False,
+    },
+}
+
+GI_CLOSE_EXPENSE = {
+    "name": "gi_close_expense",
+    "description": (
+        "Report an expense to tax: moves it from Open (10) to Reported (20). "
+        "This is REAL and IRREVERSIBLE — a reported expense is locked and "
+        "cannot be edited or deleted. Requires confirm=true and is tightly "
+        "rate-limited (shares the invoice-issue budget: 3/hour, 10/day). Before "
+        "closing, RESTATE the expense(s) to David — supplier, amount, date, "
+        "number — and get his explicit confirmation. Only then set confirm=true. "
+        "Do NOT close expenses on your own initiative; the default is to leave "
+        "them Open for David / the accountant to file."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "id": {"type": "string", "description": "Expense id to report."},
+            "confirm": {"type": "boolean", "description": "Must be explicitly true. Irreversible tax report."},
+        },
+        "required": ["id", "confirm"],
+        "additionalProperties": False,
+    },
+}
+
+GI_SEARCH_EXPENSE_DRAFTS = {
+    "name": "gi_search_expense_drafts",
+    "description": (
+        "Search expense DRAFTS created by file upload (the OCR-parsed, "
+        "not-yet-confirmed expenses). Read-only, unlimited. Use after "
+        "gi_upload_expense_file to read the parsed fields before creating the "
+        "real expense."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "supplierId": {"type": "string"},
+            "supplierName": {"type": "string"},
+            "fromDate": {"type": "string"},
+            "toDate": {"type": "string"},
+            "description": {"type": "string"},
+            "page": {"type": "integer"},
+            "pageSize": {"type": "integer"},
+        },
+        "additionalProperties": False,
+    },
+}
+
+_SUPPLIER_WRITE_PROPS = {
+    "name": {"type": "string", "description": "Supplier name."},
+    "emails": {"type": "array", "items": {"type": "string"}},
+    "taxId": {"type": "string"},
+    "address": {"type": "string"},
+    "city": {"type": "string"},
+    "zip": {"type": "string"},
+    "country": {"type": "string", "description": "2-letter ISO code."},
+    "phone": {"type": "string"},
+    "mobile": {"type": "string"},
+    "fax": {"type": "string"},
+    "contactPerson": {"type": "string"},
+    "accountingKey": {"type": "string"},
+    "department": {"type": "string"},
+    "remarks": {"type": "string"},
+}
+
+GI_CREATE_SUPPLIER = {
+    "name": "gi_create_supplier",
+    "description": (
+        "Create a supplier (vendor) that expenses are attributed to. Loosely "
+        "rate-limited. `name` is required. Returns the new supplier id. "
+        "Suppliers can be created but never deleted through this tool."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": dict(_SUPPLIER_WRITE_PROPS),
+        "required": ["name"],
+        "additionalProperties": False,
+    },
+}
+
+GI_SEARCH_SUPPLIERS = {
+    "name": "gi_search_suppliers",
+    "description": (
+        "Search suppliers by `name`, `email`, `contactPerson`, or `active`. "
+        "Read-only, unlimited. Resolve a vendor name to a supplier id before "
+        "creating an expense."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string"},
+            "email": {"type": "string"},
+            "contactPerson": {"type": "string"},
+            "active": {"type": "boolean"},
+            "page": {"type": "integer"},
+            "pageSize": {"type": "integer"},
+        },
+        "additionalProperties": False,
+    },
+}
+
+GI_GET_CLASSIFICATIONS = {
+    "name": "gi_get_classifications",
+    "description": (
+        "List the accounting classifications (expense categories) available to "
+        "this business. Read-only, unlimited. Use to pick a classification when "
+        "creating an expense."
+    ),
+    "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+}
+
 ALL_SCHEMAS = [
     GI_DRAFT_INVOICE, GI_ISSUE_INVOICE, GI_GET_DOCUMENT, GI_SEARCH_DOCUMENTS,
     GI_DOCUMENT_DOWNLOAD_LINKS, GI_CREATE_CLIENT, GI_UPDATE_CLIENT,
     GI_GET_CLIENT, GI_SEARCH_CLIENTS, GI_QUOTA,
+    # expenses
+    GI_UPLOAD_EXPENSE_FILE, GI_CREATE_EXPENSE, GI_SEARCH_EXPENSES,
+    GI_GET_EXPENSE, GI_DELETE_EXPENSE, GI_CLOSE_EXPENSE,
+    GI_SEARCH_EXPENSE_DRAFTS, GI_CREATE_SUPPLIER, GI_SEARCH_SUPPLIERS,
+    GI_GET_CLASSIFICATIONS,
 ]

@@ -42,7 +42,27 @@ invoice-relay/
 | `gi_get_document` / `gi_search_documents` / `gi_document_download_links` | retrieve | no |
 | `gi_create_client` / `gi_update_client` | client write (no delete) | loose |
 | `gi_get_client` / `gi_search_clients` | client read | no |
+| `gi_upload_expense_file` | upload an invoice image/PDF → Morning OCR draft (file attached) | loose |
+| `gi_create_expense` | record a business expense, created **Open** (never reported) | loose |
+| `gi_search_expenses` / `gi_get_expense` | expense read (dedup + monthly review) | no |
+| `gi_delete_expense` | delete an **Open** expense (rejected in review) | loose |
+| `gi_close_expense` | **report an expense to tax (Open→Reported)** | **tight + confirm** |
+| `gi_search_expense_drafts` | read OCR drafts from uploads | no |
+| `gi_create_supplier` / `gi_search_suppliers` | supplier write / read (no delete) | write=loose |
+| `gi_get_classifications` | list expense categories | no |
 | `gi_quota` | remaining budget + env + dry-run state | no |
+
+### Expense flow (vendor side)
+
+1. `gi_upload_expense_file` — Elena sends a dropped invoice photo/PDF to
+   Morning's OCR; it creates a **draft** with the source file attached.
+2. `gi_search_expense_drafts` → read the parsed fields;
+   `gi_search_expenses` → confirm it isn't a **duplicate**;
+   `gi_search_suppliers` / `gi_create_supplier` → resolve the vendor.
+3. `gi_create_expense` → record it **Open (10)**. It is NEVER auto-reported.
+4. Monthly review: list Open expenses, `gi_delete_expense` the rejected
+   ones. Reporting to tax (`gi_close_expense`, Open→Reported, irreversible)
+   is confirm-gated like issuing an invoice and done only on David's say-so.
 
 ### Intended flow
 
@@ -66,6 +86,11 @@ No credit notes, no deletes.
 | issue | 3 | 10 |
 | draft | 20 | 60 |
 | client_write | 20 | 100 |
+| expense_write | 20 | 100 |
+| expense_upload | 15 | 60 |
+
+`close_expense` (report an expense to tax) deliberately shares the `issue`
+class, so it draws from the same tight irreversible-action budget.
 
 Reads are unlimited. Override any cap via `GI_LIMIT_<CLASS>_PER_HOUR/DAY` in
 `.env`. The cap lives in the daemon, so a prompt-injected Hermes cannot

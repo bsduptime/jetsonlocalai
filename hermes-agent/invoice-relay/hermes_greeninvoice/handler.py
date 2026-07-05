@@ -33,10 +33,38 @@ _OPS = {
     "get_client":               (None, True),
     "search_clients":           (None, True),
     "quota":                    (None, True),
+    # ---- expenses (vendor-side ledger) ----
+    "create_expense":           ("expense_write", False),
+    "get_expense":              (None, True),
+    "search_expenses":          (None, True),
+    "delete_expense":           ("expense_write", False),
+    # close_expense reports the expense to tax (status 10 -> 20, irreversible).
+    # It shares the tight `issue` class and is confirm-gated (see below).
+    "close_expense":            ("issue", False),
+    "upload_expense_file":      ("expense_upload", False),
+    "search_expense_drafts":    (None, True),
+    "create_supplier":          ("expense_write", False),
+    "search_suppliers":         (None, True),
+    "get_classifications":      (None, True),
 }
+
+# Ops that create a REAL, irreversible tax record: require an explicit
+# literal-`true` confirm flag (defense in depth on top of the rate limit).
+CONFIRM_REQUIRED_OPS = {"issue_invoice", "close_expense"}
 
 _DOC_SEARCH_FIELDS = {"type", "status", "fromDate", "toDate", "clientId", "text"}
 _CLIENT_SEARCH_FIELDS = {"name", "taxId", "email", "text", "active"}
+_EXPENSE_SEARCH_FIELDS = {
+    "supplierId", "supplierName", "number", "fromDate", "toDate",
+    "minAmount", "maxAmount", "description", "accountingClassificationId",
+    "paid", "reported",
+}
+_EXPENSE_SEARCH_BOOL = {"paid", "reported"}
+_EXPENSE_DRAFT_SEARCH_FIELDS = {
+    "supplierId", "supplierName", "fromDate", "toDate", "description",
+}
+_SUPPLIER_SEARCH_FIELDS = {"name", "email", "contactPerson", "active"}
+_SUPPLIER_SEARCH_BOOL = {"active"}
 
 
 def _err(*, error: str, reason: str, request_id: str, op: str = "", **extra) -> dict:
@@ -71,9 +99,11 @@ def _rate_snapshot(cfg: Config, caller: str, action_class: str) -> dict:
 
 
 def handle(*, cfg: Config, caller: str, request: dict[str, Any],
-           get_client: Callable[[], Any]) -> dict:
+           get_client: Callable[[], Any], file_body: bytes | None = None) -> dict:
     """Dispatch one request. `get_client` lazily returns a live
-    GreenInvoiceClient (only called in live mode for ops that hit upstream)."""
+    GreenInvoiceClient (only called in live mode for ops that hit upstream).
+    `file_body` carries the raw bytes of a framed upload_expense_file request
+    (None for every other op)."""
     request_id = request.get("request_id", "")
     if not isinstance(request_id, str) or len(request_id) > 64:
         return _err(error="protocol", reason="malformed_request_id", request_id="")
@@ -90,22 +120,22 @@ def handle(*, cfg: Config, caller: str, request: dict[str, Any],
             return _handle_quota(cfg, caller, request_id)
 
         # Build + validate the upstream call (method, path, body) for this op.
-        plan = _plan_op(op, args)
+        plan = _plan_op(op, args, cfg)
 
         # ---- gated ops: confirmation + rate limit ----------------------
         if action_class is not None:
             # Strict identity check: only a real JSON `true` confirms. A
             # truthy string like "false"/"no" or an int must NOT pass.
-            if op == "issue_invoice" and args.get("confirm") is not True:
+            if op in CONFIRM_REQUIRED_OPS and args.get("confirm") is not True:
                 audit.append(cfg.audit_log_path, {
                     "caller": caller, "op": op, "outcome": "deny",
                     "reason": "confirmation_required", "request_id": request_id,
                 })
                 return _err(error="not_allowed", reason="confirmation_required",
                             request_id=request_id, op=op,
-                            detail="set args.confirm=true to issue a real document")
+                            detail="set args.confirm=true for this irreversible action")
             return _run_gated(cfg, caller, op, action_class, plan,
-                              request_id, get_client, args)
+                              request_id, get_client, args, file_body)
 
         # ---- ungated reads --------------------------------------------
         return _run_read(cfg, caller, op, plan, request_id, get_client)
@@ -158,7 +188,14 @@ def _client_id(args: dict) -> str:
     return cid
 
 
-def _plan_op(op: str, args: dict) -> _Plan:
+def _expense_id(args: dict) -> str:
+    eid = args.get("id")
+    if not isinstance(eid, str) or not eid or len(eid) > 64 or "/" in eid:
+        raise InvalidInput("invalid_expense_id", "id")
+    return eid
+
+
+def _plan_op(op: str, args: dict, cfg: Config) -> _Plan:
     if op == "draft_invoice":
         body = validate.build_document(args, for_issue=False)
         return _Plan("POST", "/documents/preview", body=body,
@@ -194,18 +231,94 @@ def _plan_op(op: str, args: dict) -> _Plan:
         body = validate.build_search(args, allowed_fields=_CLIENT_SEARCH_FIELDS)
         return _Plan("POST", "/clients/search", body=body,
                      synthetic={"items": [], "total": 0})
+
+    # ---- expenses --------------------------------------------------------
+    if op == "create_expense":
+        body = validate.build_expense(args)
+        return _Plan("POST", "/expenses", body=body, idempotent=False,
+                     synthetic={"id": "dryrun-expense", "status": 10,
+                                "documentType": body["documentType"]})
+    if op == "get_expense":
+        eid = _expense_id(args)
+        return _Plan("GET", f"/expenses/{eid}", synthetic={"id": eid, "status": 10})
+    if op == "search_expenses":
+        body = validate.build_search(args, allowed_fields=_EXPENSE_SEARCH_FIELDS,
+                                     bool_fields=_EXPENSE_SEARCH_BOOL)
+        return _Plan("POST", "/expenses/search", body=body,
+                     synthetic={"items": [], "total": 0})
+    if op == "delete_expense":
+        eid = _expense_id(args)
+        return _Plan("DELETE", f"/expenses/{eid}", idempotent=False,
+                     synthetic={"id": eid, "deleted": True})
+    if op == "close_expense":
+        eid = _expense_id(args)
+        return _Plan("POST", f"/expenses/{eid}/close", idempotent=False,
+                     synthetic={"id": eid, "status": 20})
+    if op == "upload_expense_file":
+        meta = validate.build_upload_meta(args, max_file_bytes=cfg.max_upload_file_bytes)
+        # Special method: a two-call flow (get presigned URL -> POST file to
+        # S3). `body` carries the validated upload metadata.
+        return _Plan("UPLOAD", "/file-upload/v1/url", body=meta, idempotent=False,
+                     synthetic={"uploaded": True, "dry_run": True,
+                                "filename": meta["filename"]})
+    if op == "search_expense_drafts":
+        body = validate.build_search(args, allowed_fields=_EXPENSE_DRAFT_SEARCH_FIELDS)
+        return _Plan("POST", "/expenses/drafts/search", body=body,
+                     synthetic={"items": [], "total": 0})
+    if op == "create_supplier":
+        body = validate.build_supplier_create(args)
+        return _Plan("POST", "/suppliers", body=body, idempotent=False,
+                     synthetic={"id": "dryrun-supplier", "name": body["name"]})
+    if op == "search_suppliers":
+        body = validate.build_search(args, allowed_fields=_SUPPLIER_SEARCH_FIELDS,
+                                     bool_fields=_SUPPLIER_SEARCH_BOOL)
+        return _Plan("POST", "/suppliers/search", body=body,
+                     synthetic={"items": [], "total": 0})
+    if op == "get_classifications":
+        return _Plan("GET", "/accounting/classifications/map",
+                     synthetic={"items": []})
     raise InvalidInput("unknown_op", op)  # unreachable (guarded earlier)
 
 
 # ---- execution -----------------------------------------------------------
 
-def _call_upstream(plan: _Plan, get_client) -> Any:
+def _call_upstream(plan: _Plan, get_client, file_body: bytes | None = None) -> Any:
     client = get_client()
+    if plan.method == "UPLOAD":
+        return _do_upload(plan, client, file_body)
     if plan.method == "GET":
         return client.get(plan.path, params=plan.params)
     if plan.method == "PUT":
         return client.put(plan.path, plan.body or {}, idempotent=plan.idempotent)
+    if plan.method == "DELETE":
+        return client.request("DELETE", plan.path, idempotent=plan.idempotent)
     return client.post(plan.path, plan.body or {}, idempotent=plan.idempotent)
+
+
+def _do_upload(plan: _Plan, client, file_body: bytes | None) -> Any:
+    """Two-call expense file upload: fetch a presigned S3 POST, then POST the
+    file. The raw bytes are the framed body of the request (never in the JSON).
+    The resulting OCR draft is created asynchronously upstream."""
+    meta = plan.body or {}
+    if not isinstance(file_body, (bytes, bytearray)):
+        raise UpstreamError("upload_missing_body", detail="no file bytes")
+    if len(file_body) != meta.get("byte_len"):
+        raise UpstreamError(
+            "upload_length_mismatch",
+            detail=f"{len(file_body)}!={meta.get('byte_len')}")
+    resp = client.get_upload_url()
+    if not isinstance(resp, dict) or not resp.get("url") or not isinstance(resp.get("fields"), dict):
+        raise UpstreamError("api_error", detail="malformed upload-url response")
+    client.upload_file_to_s3(
+        resp["url"], resp["fields"], filename=meta["filename"],
+        content_type=meta["content_type"], data=bytes(file_body))
+    return {
+        "uploaded": True,
+        "filename": meta["filename"],
+        "bytes": len(file_body),
+        "note": ("OCR draft is created asynchronously; find it via "
+                 "search_expense_drafts, then create the expense with create_expense"),
+    }
 
 
 def _run_read(cfg, caller, op, plan, request_id, get_client) -> dict:
@@ -228,7 +341,8 @@ def _run_read(cfg, caller, op, plan, request_id, get_client) -> dict:
     return _ok(request_id, op, result, dry_run=False)
 
 
-def _run_gated(cfg, caller, op, action_class, plan, request_id, get_client, args) -> dict:
+def _run_gated(cfg, caller, op, action_class, plan, request_id, get_client, args,
+               file_body: bytes | None = None) -> dict:
     per_hour, per_day = cfg.limits[action_class]
     local_day = ratelimit.local_day_str(cfg.limit_tz)
     detail = _audit_detail(op, plan, args)
@@ -246,7 +360,7 @@ def _run_gated(cfg, caller, op, action_class, plan, request_id, get_client, args
             return _execute_reserved(
                 cfg=cfg, caller=caller, op=op, action_class=action_class,
                 plan=plan, request_id=request_id, get_client=get_client,
-                detail=detail, reservation=reservation)
+                detail=detail, reservation=reservation, file_body=file_body)
     except ratelimit.RateLimitExceeded as e:
         audit.append(cfg.audit_log_path, {
             "caller": caller, "op": op, "outcome": "deny",
@@ -260,7 +374,7 @@ def _run_gated(cfg, caller, op, action_class, plan, request_id, get_client, args
 
 
 def _execute_reserved(*, cfg, caller, op, action_class, plan, request_id,
-                      get_client, detail, reservation) -> dict:
+                      get_client, detail, reservation, file_body=None) -> dict:
     """Run the side-effecting call under an already-acquired reservation,
     then finalize. Returns the response dict."""
     if cfg.dry_run:
@@ -274,7 +388,7 @@ def _execute_reserved(*, cfg, caller, op, action_class, plan, request_id,
                    rate=_rate_snapshot(cfg, caller, action_class))
 
     try:
-        result = _call_upstream(plan, get_client)
+        result = _call_upstream(plan, get_client, file_body)
     except UpstreamError as e:
         # Distinguish "definitely no side effect" (clean 4xx) from
         # "ambiguous" (network error / 5xx after retries). The former
@@ -329,6 +443,19 @@ def _audit_detail(op: str, plan: _Plan, args: dict) -> str:
         return f"type={body.get('type')} client={who} rows={n} email={emailed}"
     if op in ("create_client", "update_client"):
         return f"name={audit.trunc((plan.body or {}).get('name'), 40)}"
+    if op == "create_expense":
+        body = plan.body or {}
+        sup = body.get("supplier", {})
+        who = sup.get("id") or audit.trunc(sup.get("name"), 40)
+        return (f"docType={body.get('documentType')} supplier={who} "
+                f"amount={body.get('amount')} num={audit.trunc(body.get('number'), 30)}")
+    if op in ("get_expense", "delete_expense", "close_expense"):
+        return f"id={audit.trunc(args.get('id'), 40)}"
+    if op == "create_supplier":
+        return f"name={audit.trunc((plan.body or {}).get('name'), 40)}"
+    if op == "upload_expense_file":
+        # Filename only — NEVER the file bytes.
+        return f"file={audit.trunc((plan.body or {}).get('filename'), 60)}"
     return ""
 
 

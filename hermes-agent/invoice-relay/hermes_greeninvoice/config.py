@@ -79,18 +79,37 @@ GREENINVOICE_BASE_URLS = {
     "sandbox": "https://sandbox.d.greeninvoice.co.il/api/v1",
 }
 
+# Expense invoice files are uploaded via a presigned-S3 flow whose "get an
+# upload URL" endpoint lives on a DIFFERENT host from the JSON API. See
+# apiclient.get_upload_url / upload_file_to_s3.
+GREENINVOICE_FILE_UPLOAD_URLS = {
+    "production": "https://apigw.greeninvoice.co.il",
+    "sandbox": "https://api.sandbox.d.greeninvoice.co.il",
+}
+
 # Action classes and their DEFAULT caps (per_hour, per_day). Each is
 # independently overridable via env, see load_config().
 DEFAULT_LIMITS = {
-    "issue": (3, 10),          # irreversible documents — tight
-    "draft": (20, 60),         # previews — loose, just an anti-spam backstop
+    "issue": (3, 10),           # irreversible documents (issue invoice / report
+                                # an expense to tax) — tight. close_expense
+                                # deliberately shares this class so it can't be
+                                # used to double the irreversible-action budget.
+    "draft": (20, 60),          # previews — loose, just an anti-spam backstop
     "client_write": (20, 100),  # create/update client — loose
+    "expense_write": (20, 100),  # create/delete expense, create supplier — loose
+    "expense_upload": (15, 60),  # upload a file → OCR draft — moderate (OCR cost)
 }
 
 # Document types the broker will *issue*. 305 tax invoice, 320 invoice+
 # receipt, 400 receipt (for the "a 305 got paid" flow). Nothing else is
 # issuable through this tool — no credit notes, no deletes.
 ISSUABLE_DOCUMENT_TYPES = {305, 320, 400}
+
+# Expense document types (the vendor-side ledger): 10 invoice, 20 receipt,
+# 30 invoice+receipt, 40 other. Expense VAT types: 0 before-VAT, 1 included,
+# 2 exempt.
+EXPENSE_DOCUMENT_TYPES = {10, 20, 30, 40}
+EXPENSE_VAT_TYPES = {0, 1, 2}
 
 
 @dataclass(frozen=True)
@@ -110,6 +129,7 @@ class Config:
     dry_run: bool
     env: str            # "sandbox" | "production"
     base_url: str
+    file_upload_base_url: str   # host for GET /file-upload/v1/url (expenses)
 
     api_key_id: str | None
     api_key_secret: str | None
@@ -117,6 +137,10 @@ class Config:
     limit_tz: str
     limits: dict[str, tuple[int, int]]   # action_class -> (per_hour, per_day)
     max_request_bytes: int
+    # Raw byte ceiling for an uploaded invoice file (framed body of an
+    # upload_expense_file request). Separate from max_request_bytes, which
+    # bounds the JSON header line only.
+    max_upload_file_bytes: int
     reservation_ttl_seconds: int
 
     http_timeout_seconds: int
@@ -165,6 +189,10 @@ def load_config() -> Config:
             f"GI_ENV must be one of {sorted(GREENINVOICE_BASE_URLS)}, got {env!r}"
         )
     base_url = (os.environ.get("GI_BASE_URL") or GREENINVOICE_BASE_URLS[env]).rstrip("/")
+    file_upload_base_url = (
+        os.environ.get("GI_FILE_UPLOAD_BASE_URL")
+        or GREENINVOICE_FILE_UPLOAD_URLS[env]
+    ).rstrip("/")
 
     # UID map: CALLER_UID_<name>=<int>.
     uid_map: dict[int, str] = {}
@@ -216,12 +244,17 @@ def load_config() -> Config:
         dry_run=_bool(os.environ.get("GI_DRY_RUN"), default=True),
         env=env,
         base_url=base_url,
+        file_upload_base_url=file_upload_base_url,
         api_key_id=(os.environ.get("GI_API_KEY_ID") or "").strip() or None,
         api_key_secret=(os.environ.get("GI_API_KEY_SECRET") or "").strip() or None,
         limit_tz=(os.environ.get("GI_LIMIT_TZ") or "local").strip(),
         limits=_load_limits(),
         max_request_bytes=_int(
             os.environ.get("HERMES_GREENINVOICE_MAX_REQUEST_BYTES"), 1 * 1024 * 1024
+        ),
+        max_upload_file_bytes=_int(
+            os.environ.get("HERMES_GREENINVOICE_MAX_UPLOAD_FILE_BYTES"),
+            10 * 1024 * 1024,
         ),
         reservation_ttl_seconds=_int(
             os.environ.get("GI_RESERVATION_TTL_SECONDS"), 120

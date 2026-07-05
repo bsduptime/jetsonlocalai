@@ -14,6 +14,8 @@ import uuid
 
 DEFAULT_SOCKET_PATH = "/run/hermes-greeninvoice/sock"
 DEFAULT_TIMEOUT_SECONDS = 40
+# File uploads (get presigned URL + POST to S3) take longer than a JSON op.
+UPLOAD_TIMEOUT_SECONDS = 90
 MAX_RESPONSE_BYTES = 1 * 1024 * 1024
 
 
@@ -22,6 +24,45 @@ class DaemonUnreachable(Exception):
         super().__init__(f"{reason}: {detail}" if detail else reason)
         self.reason = reason
         self.detail = detail
+
+
+def _connect(sock_path: str, timeout_seconds: int) -> socket.socket:
+    try:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(timeout_seconds)
+        sock.connect(sock_path)
+        return sock
+    except FileNotFoundError:
+        raise DaemonUnreachable("socket_missing", sock_path)
+    except ConnectionRefusedError:
+        raise DaemonUnreachable("connect_refused", sock_path)
+    except (TimeoutError, socket.timeout):
+        raise DaemonUnreachable("connect_timeout", sock_path)
+    except OSError as e:
+        raise DaemonUnreachable("connect_failed", str(e))
+
+
+def _recv_response(sock: socket.socket) -> dict:
+    buf = bytearray()
+    while True:
+        try:
+            chunk = sock.recv(4096)
+        except (TimeoutError, socket.timeout) as e:
+            raise DaemonUnreachable("read_timeout", str(e))
+        if not chunk:
+            if not buf:
+                raise DaemonUnreachable("empty_response", "")
+            break
+        buf.extend(chunk)
+        if len(buf) > MAX_RESPONSE_BYTES:
+            raise DaemonUnreachable("response_too_large", str(len(buf)))
+        if b"\n" in chunk:
+            break
+    line = bytes(buf).split(b"\n", 1)[0]
+    try:
+        return json.loads(line)
+    except Exception as e:
+        raise DaemonUnreachable("malformed_response", str(e))
 
 
 def call(op: str, args: dict | None = None, *,
@@ -38,45 +79,47 @@ def call(op: str, args: dict | None = None, *,
     payload = (json.dumps(envelope, ensure_ascii=False, separators=(",", ":"))
                + "\n").encode("utf-8")
 
-    try:
-        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock.settimeout(timeout_seconds)
-        sock.connect(sock_path)
-    except FileNotFoundError:
-        raise DaemonUnreachable("socket_missing", sock_path)
-    except ConnectionRefusedError:
-        raise DaemonUnreachable("connect_refused", sock_path)
-    except (TimeoutError, socket.timeout):
-        raise DaemonUnreachable("connect_timeout", sock_path)
-    except OSError as e:
-        raise DaemonUnreachable("connect_failed", str(e))
-
+    sock = _connect(sock_path, timeout_seconds)
     try:
         try:
             sock.sendall(payload)
         except (TimeoutError, socket.timeout, BrokenPipeError, OSError) as e:
             raise DaemonUnreachable("send_failed", str(e))
-
-        buf = bytearray()
-        while True:
-            try:
-                chunk = sock.recv(4096)
-            except (TimeoutError, socket.timeout) as e:
-                raise DaemonUnreachable("read_timeout", str(e))
-            if not chunk:
-                if not buf:
-                    raise DaemonUnreachable("empty_response", "")
-                break
-            buf.extend(chunk)
-            if len(buf) > MAX_RESPONSE_BYTES:
-                raise DaemonUnreachable("response_too_large", str(len(buf)))
-            if b"\n" in chunk:
-                break
-        line = bytes(buf).split(b"\n", 1)[0]
+        return _recv_response(sock)
+    finally:
         try:
-            return json.loads(line)
-        except Exception as e:
-            raise DaemonUnreachable("malformed_response", str(e))
+            sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        sock.close()
+
+
+def call_with_file(op: str, args: dict, file_bytes: bytes, *,
+                   socket_path: str | None = None,
+                   timeout_seconds: int = UPLOAD_TIMEOUT_SECONDS) -> dict:
+    """Framed upload: send the JSON header line (with byte_len) then the raw
+    file bytes, and read one JSON response. Used by upload_expense_file."""
+    sock_path = socket_path or os.environ.get(
+        "HERMES_GREENINVOICE_SOCKET", DEFAULT_SOCKET_PATH)
+    hdr = dict(args or {})
+    hdr["byte_len"] = len(file_bytes)
+    envelope = {
+        "v": 1,
+        "op": op,
+        "request_id": uuid.uuid4().hex,
+        "args": hdr,
+    }
+    header = (json.dumps(envelope, ensure_ascii=False, separators=(",", ":"))
+              + "\n").encode("utf-8")
+
+    sock = _connect(sock_path, timeout_seconds)
+    try:
+        try:
+            sock.sendall(header)
+            sock.sendall(file_bytes)
+        except (TimeoutError, socket.timeout, BrokenPipeError, OSError) as e:
+            raise DaemonUnreachable("send_failed", str(e))
+        return _recv_response(sock)
     finally:
         try:
             sock.shutdown(socket.SHUT_RDWR)

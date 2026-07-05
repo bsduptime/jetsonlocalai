@@ -1,18 +1,29 @@
 name: greeninvoice
 version: 0.1.0
 description: |
-  Draft, retrieve, and issue GreenInvoice (Morning) documents, and manage the
-  clients they bill. All policy — per-action rate limits, the issue/send
-  confirmation gate, credential custody — lives in the privilege-separated
-  hermes-greeninvoice daemon; this plugin is a thin Unix-socket client and
-  never sees the API key.
+  Draft, retrieve, and issue GreenInvoice (Morning) INCOME documents and manage
+  the clients they bill; and record business EXPENSES (with the source invoice
+  attached) on the vendor side. All policy — per-action rate limits, the
+  issue/close confirmation gates, credential custody — lives in the
+  privilege-separated hermes-greeninvoice daemon; this plugin is a thin
+  Unix-socket client and never sees the API key.
 
-  Workflow: gi_draft_invoice renders a PREVIEW (nothing is recorded, no email
-  is sent) so you can show it to David. gi_issue_invoice creates a REAL,
-  irreversible document and is rate-limited (3/hour, 10/day) and requires an
-  explicit confirm flag. Issuing can also email the client when asked. Clients
-  can be created/updated but never deleted. Dry-run is the default until David
-  flips GI_DRY_RUN=false with sandbox or production credentials in place.
+  Income workflow: gi_draft_invoice renders a PREVIEW (nothing recorded, no
+  email) to show David; gi_issue_invoice creates a REAL, irreversible document,
+  rate-limited (3/hour, 10/day) and requires confirm=true.
+
+  Expense workflow: gi_upload_expense_file sends an invoice photo/PDF to
+  Morning's OCR, which creates a DRAFT with the file attached. Read the parsed
+  draft (gi_search_expense_drafts), check it isn't a duplicate
+  (gi_search_expenses), resolve the supplier (gi_search_suppliers /
+  gi_create_supplier), then gi_create_expense to record it OPEN (status 10).
+  Expenses stay Open and are NEVER auto-reported to tax. gi_close_expense
+  reports one to tax (Open -> Reported, IRREVERSIBLE) and — like issuing an
+  invoice — requires confirm=true, is tightly rate-limited, and must be
+  restated to David first. gi_delete_expense removes a rejected Open expense.
+
+  Dry-run is the default until David flips GI_DRY_RUN=false with sandbox or
+  production credentials in place.
 author: David Klippel
 provides_tools:
   - gi_draft_invoice
@@ -25,3 +36,13 @@ provides_tools:
   - gi_get_client
   - gi_search_clients
   - gi_quota
+  - gi_upload_expense_file
+  - gi_create_expense
+  - gi_get_expense
+  - gi_search_expenses
+  - gi_delete_expense
+  - gi_close_expense
+  - gi_search_expense_drafts
+  - gi_create_supplier
+  - gi_search_suppliers
+  - gi_get_classifications

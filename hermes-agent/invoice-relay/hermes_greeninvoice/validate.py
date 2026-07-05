@@ -12,7 +12,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from .config import ISSUABLE_DOCUMENT_TYPES
+from .config import (
+    EXPENSE_DOCUMENT_TYPES,
+    EXPENSE_VAT_TYPES,
+    ISSUABLE_DOCUMENT_TYPES,
+)
 from .errors import InvalidInput
 
 # Drafts/previews may render a wider set than we will ever *issue*: price
@@ -334,17 +338,201 @@ def _lang(v: Any) -> str:
     return v.lower()
 
 
+# ---- expense validation --------------------------------------------------
+
+# Vendor-side "accounting classification" (the expense category). We forward
+# only these identifying/echo fields; the caller cannot smuggle arbitrary keys.
+_CLASSIFICATION_FIELDS = ("id", "key", "code", "title", "irsCode", "type")
+
+
+def _build_supplier_block(raw: Any) -> dict:
+    """Build the expense's `supplier` block: either an existing supplier by
+    `id`, or an inline supplier with at least `name`."""
+    if not isinstance(raw, dict):
+        raise InvalidInput("missing_field", "supplier")
+    supplier_id = raw.get("id")
+    if supplier_id is not None:
+        if not isinstance(supplier_id, str) or not supplier_id or len(supplier_id) > 64:
+            raise InvalidInput("invalid_supplier_id", "supplier.id")
+        block: dict[str, Any] = {"id": supplier_id}
+        name = _req_str(raw, "name", required=False)
+        if name:
+            block["name"] = name
+        return block
+    block = {"name": _req_str(raw, "name")}
+    if "emails" in raw and raw["emails"] is not None:
+        block["emails"] = _emails(raw["emails"])
+    for opt in ("taxId", "address", "city", "zip", "phone", "mobile", "fax",
+                "country", "contactPerson", "accountingKey", "department"):
+        val = _req_str(raw, opt, required=False)
+        if val is not None:
+            block[opt] = val
+    if "country" in block and (len(block["country"]) != 2 or not block["country"].isalpha()):
+        raise InvalidInput("invalid_country", "supplier.country")
+    return block
+
+
+def _build_classification(raw: Any) -> dict:
+    if not isinstance(raw, dict):
+        raise InvalidInput("invalid_field_type", "accountingClassification")
+    out: dict[str, Any] = {}
+    for k in _CLASSIFICATION_FIELDS:
+        v = raw.get(k)
+        if v is None:
+            continue
+        if k in ("irsCode", "type"):
+            out[k] = _int_field(raw, k)
+        else:
+            s = _req_str(raw, k, maxlen=120, required=False)
+            if s is not None:
+                out[k] = s
+    if not out:
+        raise InvalidInput("empty_classification", "accountingClassification")
+    return out
+
+
+def build_expense(args: dict) -> dict:
+    """Validate + build a POST /expenses body. Builds an expense that is
+    CREATED OPEN (status 10). This builder structurally cannot report/close an
+    expense: there is no path here to status 20 — that lives solely in the
+    confirm-gated close_expense op (POST /expenses/{id}/close)."""
+    if not isinstance(args, dict):
+        raise InvalidInput("invalid_field_type", "expense")
+
+    doc_type = _int_field(args, "documentType", default=40)
+    if doc_type not in EXPENSE_DOCUMENT_TYPES:
+        raise InvalidInput("expense_type_not_allowed", str(doc_type))
+
+    amount = _num(args.get("amount"), "amount")
+    if amount < 0 or amount > MAX_UNIT_PRICE:
+        raise InvalidInput("invalid_amount", "amount")
+
+    body: dict[str, Any] = {
+        "documentType": doc_type,
+        "amount": amount,
+        "currency": _currency(args.get("currency", "ILS")),
+        "supplier": _build_supplier_block(args.get("supplier")),
+        # Always active: an expense must stay visible for the monthly review.
+        # Not caller-controllable (a hidden/inactive expense could dodge review).
+        "active": True,
+    }
+
+    if args.get("vat") is not None:
+        vat = _num(args.get("vat"), "vat")
+        if vat < 0 or vat > MAX_UNIT_PRICE:
+            raise InvalidInput("invalid_vat", "vat")
+        body["vat"] = vat
+    if args.get("vatType") is not None:
+        vt = _int_field(args, "vatType")
+        if vt not in EXPENSE_VAT_TYPES:
+            raise InvalidInput("invalid_vat_type", "vatType")
+        body["vatType"] = vt
+    if args.get("currencyRate") is not None:
+        rate = _num(args.get("currencyRate"), "currencyRate")
+        if rate <= 0 or rate > 1_000_000:
+            raise InvalidInput("invalid_currency_rate", "currencyRate")
+        body["currencyRate"] = rate
+    if args.get("paymentType") is not None:
+        ptype = args.get("paymentType")
+        if isinstance(ptype, bool) or not isinstance(ptype, int) \
+                or ptype not in VALID_PAYMENT_TYPES:
+            raise InvalidInput("invalid_payment_type", "paymentType")
+        body["paymentType"] = ptype
+
+    for date_key in ("date", "dueDate", "reportingDate"):
+        d = _date(args, date_key, required=False)
+        if d:
+            body[date_key] = d
+
+    num = _req_str(args, "number", maxlen=64, required=False)
+    if num is not None:
+        body["number"] = num
+    for opt, maxlen in (("description", MAX_STR), ("remarks", MAX_DESC)):
+        val = _req_str(args, opt, maxlen=maxlen, required=False)
+        if val is not None:
+            body[opt] = val
+
+    if args.get("accountingClassification") is not None:
+        body["accountingClassification"] = _build_classification(
+            args["accountingClassification"])
+
+    return body
+
+
+def build_supplier_create(args: dict) -> dict:
+    """Validate + build a POST /suppliers body (mirror of build_client_create)."""
+    if not isinstance(args, dict):
+        raise InvalidInput("invalid_field_type", "supplier")
+    body: dict[str, Any] = {"name": _req_str(args, "name")}
+    if "emails" in args and args["emails"] is not None:
+        body["emails"] = _emails(args["emails"])
+    for opt in ("taxId", "address", "city", "zip", "phone", "mobile", "fax",
+                "country", "contactPerson", "accountingKey", "department", "remarks"):
+        val = _req_str(args, opt, required=False)
+        if val is not None:
+            body[opt] = val
+    if "country" in body and (len(body["country"]) != 2 or not body["country"].isalpha()):
+        raise InvalidInput("invalid_country", "country")
+    return body
+
+
+# ---- upload metadata validation ------------------------------------------
+
+# Invoice attachments Elena may upload. Kept tight — these are business
+# receipts, not arbitrary files.
+UPLOAD_EXTENSIONS = {"pdf", "png", "jpg", "jpeg", "webp", "heic", "heif", "gif"}
+UPLOAD_CONTENT_TYPES = {
+    "application/pdf", "image/png", "image/jpeg", "image/webp",
+    "image/heic", "image/heif", "image/gif",
+}
+MAX_FILENAME = 255
+
+
+def build_upload_meta(args: dict, *, max_file_bytes: int) -> dict:
+    """Validate the metadata for an upload_expense_file request. The raw file
+    bytes ride the framed body, not the JSON; here we validate filename,
+    content_type and the declared byte length against the cap."""
+    if not isinstance(args, dict):
+        raise InvalidInput("invalid_field_type", "upload")
+    filename = _req_str(args, "filename", maxlen=MAX_FILENAME)
+    # No path separators, and nothing that could inject a multipart
+    # Content-Disposition header (quotes, CR/LF, other control chars).
+    if any(c in filename for c in '/\\"') or any(ord(c) < 32 or ord(c) == 127 for c in filename):
+        raise InvalidInput("invalid_filename", "filename")
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    if ext not in UPLOAD_EXTENSIONS:
+        raise InvalidInput("unsupported_file_type", "filename")
+    content_type = _req_str(args, "content_type", maxlen=100)
+    # Normalise to the validated BASE type only — discard any parameters. This
+    # is what gets written into the multipart Content-Type header, so it must
+    # not carry `;params`, CR/LF, or other control chars (header injection).
+    base_ct = content_type.split(";", 1)[0].strip().lower()
+    if base_ct not in UPLOAD_CONTENT_TYPES:
+        raise InvalidInput("unsupported_content_type", "content_type")
+    content_type = base_ct
+    byte_len = args.get("byte_len")
+    if isinstance(byte_len, bool) or not isinstance(byte_len, int):
+        raise InvalidInput("invalid_byte_len", "byte_len")
+    if byte_len <= 0 or byte_len > max_file_bytes:
+        raise InvalidInput("file_too_large", "byte_len")
+    return {"filename": filename, "content_type": content_type, "byte_len": byte_len}
+
+
 # ---- search validation ---------------------------------------------------
 
-def build_search(args: dict, *, allowed_fields: set[str]) -> dict:
+def build_search(args: dict, *, allowed_fields: set[str],
+                 bool_fields: set[str] = frozenset()) -> dict:
     """Build a conservative search body. Only whitelisted scalar/string
-    filters pass through; pagination is clamped."""
+    filters pass through; pagination is clamped. Fields named in `bool_fields`
+    additionally accept a JSON boolean."""
     body: dict[str, Any] = {}
     if isinstance(args, dict):
         for k in allowed_fields:
             if k in args and args[k] is not None:
                 v = args[k]
-                if isinstance(v, str):
+                if k in bool_fields and isinstance(v, bool):
+                    body[k] = v
+                elif isinstance(v, str):
                     if "\x00" in v or len(v) > MAX_STR:
                         raise InvalidInput("invalid_search_field", k)
                     body[k] = v

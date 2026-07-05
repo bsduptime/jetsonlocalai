@@ -67,7 +67,10 @@ One request per connection.
 - `op` (required, string) — one of:
   `draft_invoice`, `issue_invoice`, `get_document`, `search_documents`,
   `document_download_links`, `create_client`, `update_client`,
-  `get_client`, `search_clients`, `quota`.
+  `get_client`, `search_clients`, `quota`, and the expense ops:
+  `create_expense`, `get_expense`, `search_expenses`, `delete_expense`,
+  `close_expense`, `upload_expense_file`, `search_expense_drafts`,
+  `create_supplier`, `search_suppliers`, `get_classifications`.
 - `request_id` (required, string, ≤64 chars) — echoed in the response.
 - `args` (object) — op-specific; validated + rebuilt server-side. The
   daemon never forwards a caller-supplied raw GreenInvoice body; it builds
@@ -97,12 +100,58 @@ another's quota and cannot mint itself a fresh one.
 | `update_client` | updates a client | client_write | loose |
 | `get_client` | none | — | no |
 | `search_clients` | none | — | no |
+| `create_expense` | creates an OPEN expense | expense_write | loose (20/h, 100/d) |
+| `get_expense` | none | — | no |
+| `search_expenses` | none | — | no |
+| `delete_expense` | deletes an OPEN expense | expense_write | loose |
+| `close_expense` | **reports an expense to tax (10→20)** | issue | **tight (3/h,10/d) + `confirm`** |
+| `upload_expense_file` | uploads a file → OCR draft | expense_upload | moderate (15/h, 60/d) |
+| `search_expense_drafts` | none | — | no |
+| `create_supplier` | creates a supplier | expense_write | loose |
+| `search_suppliers` | none | — | no |
+| `get_classifications` | none | — | no |
 | `quota` | none | — | no |
 
 Document types: **305** tax invoice, **320** invoice+receipt, **400**
 receipt — the only *issuable* types. Drafts may additionally preview
 **300** proforma and **10** price quote. No credit notes, no deletes
 through this broker.
+
+### Expenses (vendor-side ledger)
+
+Expenses are created **Open** (status 10) and are never auto-reported.
+`close_expense` is the ONLY path to **Reported** (status 20, irreversible,
+locked to tax); it shares the tight `issue` action class and, like
+`issue_invoice`, is rejected with `confirmation_required` unless
+`args.confirm === true` (see `CONFIRM_REQUIRED_OPS` in `handler.py`).
+`build_expense` structurally cannot report an expense, so create/upload/
+delete/supplier ops can never reach status 20.
+
+Expense document types: **10** invoice, **20** receipt, **30**
+invoice+receipt, **40** other (default). VAT types: **0** before-VAT, **1**
+included, **2** exempt.
+
+### `upload_expense_file` — framed binary body
+
+Uploading an invoice file uses a **framed** variant of the protocol: the
+client writes the normal JSON header line (`args` carries `filename`,
+`content_type`, and `byte_len`) followed by exactly `byte_len` raw bytes of
+the file. Normal ops are unchanged (single JSON line, `max_request_bytes`
+cap); only this op reads a body, bounded by `max_upload_file_bytes` (10 MiB
+default). The daemon then runs the two-call Morning flow: an authed
+`GET /file-upload/v1/url` (on the file-upload gateway host) for a presigned
+S3 POST, then a `multipart/form-data` POST of the file to S3. That S3 POST
+carries **no bearer auth** (the presigned fields are the auth), follows **no
+redirects**, and the returned URL is host- and IP-allowlisted (SSRF guard in
+`apiclient._validate_upload_url`). Residual (accepted) risk: the IP check
+resolves the host separately from urllib's own connect, so it is not a fully
+airtight DNS-rebinding defense — but the URL comes from an *authenticated*
+GreenInvoice response, so exploiting it would need GreenInvoice itself to be
+compromised, already out of scope (see "Honest limits"). The upload creates an OCR **draft**
+asynchronously; the agent then reviews it (`search_expense_drafts`),
+dedup-checks (`search_expenses`), and records the real Open expense
+(`create_expense`). Raw file bytes are never logged (audit records the
+filename only).
 
 ### `issue_invoice` confirmation gate
 

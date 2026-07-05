@@ -83,9 +83,11 @@ def _peercred_uid(conn: socket.socket) -> int | None:
 
 
 def _read_until_newline(conn: socket.socket, max_bytes: int,
-                        deadline_seconds: float = CONN_DEADLINE_SECONDS) -> bytes:
+                        deadline: float) -> tuple[bytes, bytes]:
+    """Read the JSON header line. Returns (line, leftover) where `leftover` is
+    any bytes already received past the newline (the start of a framed upload
+    body). `max_bytes` bounds the header line only."""
     buf = bytearray()
-    deadline = time.monotonic() + deadline_seconds
     while True:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
@@ -98,13 +100,37 @@ def _read_until_newline(conn: socket.socket, max_bytes: int,
         if not chunk:
             if not buf:
                 raise ProtocolError("empty_request", "")
-            return bytes(buf)
+            return bytes(buf), b""
         buf.extend(chunk)
-        if len(buf) > max_bytes:
-            raise ProtocolError("request_too_large", str(len(buf)))
         nl = buf.find(b"\n")
         if nl >= 0:
-            return bytes(buf[:nl])
+            if nl > max_bytes:
+                raise ProtocolError("request_too_large", str(nl))
+            return bytes(buf[:nl]), bytes(buf[nl + 1:])
+        if len(buf) > max_bytes:
+            raise ProtocolError("request_too_large", str(len(buf)))
+
+
+def _read_exact(conn: socket.socket, need: int, initial: bytes,
+                deadline: float) -> bytes:
+    """Read exactly `need` bytes (the framed upload body), starting from any
+    `initial` leftover. Rejects a client that sends more than it declared."""
+    if len(initial) > need:
+        raise ProtocolError("body_overrun", f"{len(initial)}>{need}")
+    buf = bytearray(initial)
+    while len(buf) < need:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise ProtocolError("read_timeout", "deadline_exceeded")
+        try:
+            conn.settimeout(remaining)
+            chunk = conn.recv(min(65536, need - len(buf)))
+        except (TimeoutError, socket.timeout) as e:
+            raise ProtocolError("read_timeout", str(e))
+        if not chunk:
+            raise ProtocolError("truncated_body", f"{len(buf)}/{need}")
+        buf.extend(chunk)
+    return bytes(buf)
 
 
 def _write_response(conn: socket.socket, payload: dict) -> None:
@@ -133,8 +159,9 @@ def _handle_connection(conn: socket.socket, cfg: Config, clients: _ClientHolder)
                                    "detail": f"uid={uid}"})
             return
 
+        deadline = time.monotonic() + CONN_DEADLINE_SECONDS
         try:
-            raw = _read_until_newline(conn, cfg.max_request_bytes)
+            raw, leftover = _read_until_newline(conn, cfg.max_request_bytes, deadline)
         except ProtocolError as e:
             _write_response(conn, {"v": 1, "request_id": "", "ok": False,
                                    "error": "protocol", "reason": e.reason, "detail": e.detail})
@@ -160,7 +187,29 @@ def _handle_connection(conn: socket.socket, cfg: Config, clients: _ClientHolder)
                                    "detail": f"server=1 got={req.get('v')!r}"})
             return
 
-        response = handle(cfg=cfg, caller=caller, request=req, get_client=clients.get)
+        # Framed upload: upload_expense_file carries `byte_len` raw bytes after
+        # the header line. Read exactly that many (bounded), else drop the
+        # leftover. The daemon reads the body even in dry-run to keep framing.
+        file_body = None
+        if req.get("op") == "upload_expense_file":
+            uargs = req.get("args") if isinstance(req.get("args"), dict) else {}
+            byte_len = uargs.get("byte_len")
+            if isinstance(byte_len, bool) or not isinstance(byte_len, int) \
+                    or byte_len <= 0 or byte_len > cfg.max_upload_file_bytes:
+                _write_response(conn, {"v": 1, "request_id": request_id, "ok": False,
+                                       "error": "protocol", "reason": "invalid_upload_length",
+                                       "detail": str(byte_len)[:40]})
+                return
+            try:
+                file_body = _read_exact(conn, byte_len, leftover, deadline)
+            except ProtocolError as e:
+                _write_response(conn, {"v": 1, "request_id": request_id, "ok": False,
+                                       "error": "protocol", "reason": e.reason,
+                                       "detail": e.detail})
+                return
+
+        response = handle(cfg=cfg, caller=caller, request=req,
+                          get_client=clients.get, file_body=file_body)
         _write_response(conn, response)
     except Exception as e:
         log.exception("internal error handling connection")
