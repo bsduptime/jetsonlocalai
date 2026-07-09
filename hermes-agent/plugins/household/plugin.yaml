@@ -1,0 +1,26 @@
+name: household
+version: 0.1.0
+description: |
+  Persistent household lists (default: the shopping list), shared across
+  every chat this Hermes instance is in. The model does the *language*
+  work — deciding that "we're out of dog food" in the family group is a
+  purchase request, and what the item is actually called — and this plugin
+  does the *state* work: a deterministic, atomically-written JSON list
+  that survives sessions, with normalization + dedup done in code so the
+  list the family reads back is always exactly what was stored.
+
+  - shopping_add: add item(s) on a clear purchase/replenish request.
+  - shopping_list: read a list back, exactly as stored.
+  - shopping_remove: take item(s) off (bought / no longer needed).
+  - shopping_clear: wipe a list after a full shopping trip (confirm-gated).
+
+  One list namespace per Hermes instance (instance = one family), so the
+  group chat and a private chat with the same agent see the same list.
+  State: $HOUSEHOLD_STATE_DIR, else $HERMES_HOME/household, else
+  ~/.hermes/household — one JSON file per named list.
+author: David Klippel
+provides_tools:
+  - shopping_add
+  - shopping_remove
+  - shopping_list
+  - shopping_clear
