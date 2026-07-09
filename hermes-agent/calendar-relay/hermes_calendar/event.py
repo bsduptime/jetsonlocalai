@@ -133,7 +133,9 @@ def _warnings(invited, informed, unresolved) -> list:
 def _fmt_when(iso_start: str, iso_end: str) -> str:
     s = datetime.fromisoformat(iso_start)
     e = datetime.fromisoformat(iso_end)
-    day = s.strftime("%a %b %-d")
+    # Build the day portably: %-d (no leading zero) is glibc-only and raises
+    # ValueError on Windows, so format the day number ourselves.
+    day = s.strftime("%a %b ") + str(s.day)
     return f"{day} {s.strftime('%H:%M')}–{e.strftime('%H:%M')}"
 
 
