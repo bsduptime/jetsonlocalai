@@ -53,9 +53,10 @@ engineered into.
 
 ## Protocol
 
-JSONL over a Unix stream socket. The client writes ONE JSON object + `\n`;
-the daemon reads it, processes, writes ONE JSON response + `\n`; closes.
-One request per connection.
+JSONL over a Unix stream socket — or, on platforms without AF_UNIX
+(Windows), over loopback TCP (`HERMES_GREENINVOICE_SOCKET=tcp://127.0.0.1:<port>`).
+The client writes ONE JSON object + `\n`; the daemon reads it, processes,
+writes ONE JSON response + `\n`; closes. One request per connection.
 
 ### Request envelope
 
@@ -77,12 +78,25 @@ One request per connection.
   the body from whitelisted fields so a caller can't smuggle a different
   document type or extra fields.
 
-### `caller` is derived from SO_PEERCRED, NOT from the request
+### `caller` is derived from peer credentials, NOT from the request
 
-The daemon reads the connecting process's UID via `SO_PEERCRED` and maps
-it to a caller identity. Spoofing is impossible — the kernel attests to
-the UID. Default mapping: `hermes` → `elena`; everything else rejected as
-`unknown_caller`. Add `CALLER_UID_<name>=<uid>` to grow the table.
+Over the Unix socket, the daemon reads the connecting process's UID via
+peer credentials (`SO_PEERCRED` on Linux, `LOCAL_PEERCRED` on macOS) and
+maps it to a caller identity. Spoofing is impossible — the kernel attests
+to the UID. Default mapping: `hermes` → `elena`; everything else rejected
+as `unknown_caller`. Add `CALLER_UID_<name>=<uid>` to grow the table.
+
+Over loopback TCP there are no kernel peer credentials, so identity is a
+per-caller shared secret: the client adds `"caller_token": "<secret>"` to
+the envelope (top level, next to `op`; the thin clients read it from
+`HERMES_GREENINVOICE_TOKEN`), matched constant-time against the daemon's
+`GI_CALLER_TOKEN_<name>` entries. The token is popped from the request
+before dispatch and never logged. Fail closed: with no tokens configured
+every TCP request is refused (`tcp_auth_not_configured`), and the listener
+refuses to bind any non-loopback address. This is weaker than peercred (a
+same-host process that reads the token can impersonate the caller), which
+is why each agent gets its own token and the daemon's config file is
+ACL'd away from the agent account — see `WINDOWS-DEPLOY.md`.
 
 All rate-limit state is keyed by `caller`, so a new caller cannot consume
 another's quota and cannot mint itself a fresh one.

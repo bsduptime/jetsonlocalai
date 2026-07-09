@@ -116,7 +116,10 @@ EXPENSE_VAT_TYPES = {0, 1, 2}
 class Config:
     config_dir: Path
     state_dir: Path
-    socket_path: Path
+    # A filesystem Path for the UDS listener, or a "tcp://127.0.0.1:<port>"
+    # string for the portable TCP listener (Windows has no AF_UNIX in
+    # CPython). Kept as str in TCP mode — Path() would mangle the "//".
+    socket_path: Path | str
 
     audit_log_path: Path
     ratelimit_db_path: Path
@@ -148,6 +151,11 @@ class Config:
 
     # Caller resolution: UID -> caller identity (from CALLER_UID_<name>=<uid>).
     caller_uid_map: dict[int, str] = field(default_factory=dict)
+    # TCP caller resolution: shared secret -> caller identity (from
+    # GI_CALLER_TOKEN_<name>=<secret>). TCP has no SO_PEERCRED, so identity
+    # comes from a per-caller token the client sends in the envelope. The
+    # daemon refuses ALL TCP requests when this map is empty (fail closed).
+    caller_token_map: dict[str, str] = field(default_factory=dict)
 
 
 _CALLER_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,30}$")
@@ -214,12 +222,40 @@ def load_config() -> Config:
             )
         uid_map[uid] = caller_name
 
+    # Token map: GI_CALLER_TOKEN_<name>=<secret> (TCP-mode caller identity).
+    token_map: dict[str, str] = {}
+    for k, v in sorted(os.environ.items()):
+        if not k.startswith("GI_CALLER_TOKEN_"):
+            continue
+        caller_name = k[len("GI_CALLER_TOKEN_"):].lower()
+        if not _CALLER_NAME_RE.match(caller_name):
+            raise ConfigError(
+                f"invalid caller name in {k}: must match {_CALLER_NAME_RE.pattern}"
+            )
+        token = v.strip()
+        if len(token) < 16:
+            raise ConfigError(
+                f"{k}: token too short ({len(token)} chars, need >= 16) — "
+                "generate one with `python -c \"import secrets; print(secrets.token_hex(24))\"`"
+            )
+        if token in token_map and token_map[token] != caller_name:
+            raise ConfigError(
+                f"duplicate caller token: {token_map[token]!r} and {caller_name!r} "
+                "share the same secret"
+            )
+        token_map[token] = caller_name
+
+    raw_socket = os.environ.get("HERMES_GREENINVOICE_SOCKET") or ""
+    socket_path: Path | str
+    if raw_socket.startswith("tcp:"):
+        socket_path = raw_socket
+    else:
+        socket_path = Path(raw_socket) if raw_socket else (runtime_dir / "sock")
+
     return Config(
         config_dir=config_dir,
         state_dir=state_dir,
-        socket_path=Path(
-            os.environ.get("HERMES_GREENINVOICE_SOCKET") or (runtime_dir / "sock")
-        ),
+        socket_path=socket_path,
         audit_log_path=Path(
             os.environ.get("HERMES_GREENINVOICE_AUDIT_LOG_PATH")
             or (state_dir / "audit.log")
@@ -262,6 +298,7 @@ def load_config() -> Config:
         http_timeout_seconds=_int(os.environ.get("GI_HTTP_TIMEOUT_SECONDS"), 30),
         min_request_interval_ms=_int(os.environ.get("GI_MIN_REQUEST_INTERVAL_MS"), 350),
         caller_uid_map=uid_map,
+        caller_token_map=token_map,
     )
 
 

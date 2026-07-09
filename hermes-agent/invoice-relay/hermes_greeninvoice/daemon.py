@@ -1,11 +1,19 @@
-"""hermes-greeninvoice daemon — UDS server.
+"""hermes-greeninvoice daemon — UDS or loopback-TCP server.
 
 For each connection:
-  1. Resolve the connecting UID via SO_PEERCRED -> caller identity.
+  1. Resolve the caller identity:
+       UDS  — connecting UID via peer credentials (SO_PEERCRED / LOCAL_PEERCRED).
+       TCP  — a per-caller shared secret in the request envelope
+              (`caller_token`, configured as GI_CALLER_TOKEN_<name>).
   2. Read up to MAX_REQUEST_BYTES with a wall-clock deadline.
   3. Parse the first line as a JSON request envelope.
   4. Dispatch to handler.handle.
   5. Write the JSON response + newline; close.
+
+TCP mode exists for Windows, where CPython has no AF_UNIX: set
+HERMES_GREENINVOICE_SOCKET=tcp://127.0.0.1:<port>. It binds loopback ONLY
+and refuses every request unless at least one caller token is configured —
+this broker holds live invoicing credentials, so no auth means no service.
 
 One request per connection. The GreenInvoice API client (token cache +
 throttle) is shared across connections and built lazily on first live use.
@@ -13,6 +21,7 @@ throttle) is shared across connections and built lazily on first live use.
 
 from __future__ import annotations
 
+import hmac
 import json
 import logging
 import os
@@ -73,13 +82,37 @@ def _resolve_caller(uid: int, cfg: Config) -> str | None:
 
 def _peercred_uid(conn: socket.socket) -> int | None:
     try:
-        creds = conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, _UCRED_SIZE)
-        if len(creds) < _UCRED_SIZE:
-            return None
-        _pid, uid, _gid = struct.unpack(_UCRED_FMT, creds)
-        return uid
+        if hasattr(socket, "SO_PEERCRED"):  # Linux: struct ucred {pid,uid,gid}
+            creds = conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, _UCRED_SIZE)
+            if len(creds) < _UCRED_SIZE:
+                return None
+            _pid, uid, _gid = struct.unpack(_UCRED_FMT, creds)
+            return uid
+        if hasattr(socket, "LOCAL_PEERCRED"):  # macOS/BSD: struct xucred
+            # {u_int cr_version; uid_t cr_uid; ...} — uid is the second u32.
+            creds = conn.getsockopt(getattr(socket, "SOL_LOCAL", 0),
+                                    socket.LOCAL_PEERCRED, 128)
+            if len(creds) < 8:
+                return None
+            _version, uid = struct.unpack("2I", creds[:8])
+            return uid
+        return None
     except OSError:
         return None
+
+
+def _resolve_token_caller(token: object, cfg: Config) -> str | None:
+    """Map a TCP client's `caller_token` to a caller name. Compares against
+    every configured token (constant-time per compare) so a miss costs the
+    same as a hit."""
+    if not isinstance(token, str) or not token:
+        return None
+    token_b = token.encode("utf-8")
+    matched = None
+    for configured, name in cfg.caller_token_map.items():
+        if hmac.compare_digest(configured.encode("utf-8"), token_b):
+            matched = name
+    return matched
 
 
 def _read_until_newline(conn: socket.socket, max_bytes: int,
@@ -145,19 +178,23 @@ def _handle_connection(conn: socket.socket, cfg: Config, clients: _ClientHolder)
     request_id = ""
     try:
         conn.settimeout(CONN_DEADLINE_SECONDS)
-        uid = _peercred_uid(conn)
-        if uid is None:
-            _write_response(conn, {"v": 1, "request_id": "", "ok": False,
-                                   "error": "protocol", "reason": "peercred_unavailable"})
-            return
-        caller = _resolve_caller(uid, cfg)
-        if caller is None:
-            audit.append(cfg.audit_log_path, {"caller": f"uid_{uid}",
-                                              "outcome": "deny", "reason": "unknown_caller"})
-            _write_response(conn, {"v": 1, "request_id": "", "ok": False,
-                                   "error": "protocol", "reason": "unknown_caller",
-                                   "detail": f"uid={uid}"})
-            return
+        is_tcp = conn.family != getattr(socket, "AF_UNIX", None)
+        caller: str | None = None
+        if not is_tcp:
+            # UDS: identity from kernel peer credentials, before reading a byte.
+            uid = _peercred_uid(conn)
+            if uid is None:
+                _write_response(conn, {"v": 1, "request_id": "", "ok": False,
+                                       "error": "protocol", "reason": "peercred_unavailable"})
+                return
+            caller = _resolve_caller(uid, cfg)
+            if caller is None:
+                audit.append(cfg.audit_log_path, {"caller": f"uid_{uid}",
+                                                  "outcome": "deny", "reason": "unknown_caller"})
+                _write_response(conn, {"v": 1, "request_id": "", "ok": False,
+                                       "error": "protocol", "reason": "unknown_caller",
+                                       "detail": f"uid={uid}"})
+                return
 
         deadline = time.monotonic() + CONN_DEADLINE_SECONDS
         try:
@@ -186,6 +223,26 @@ def _handle_connection(conn: socket.socket, cfg: Config, clients: _ClientHolder)
                                    "error": "protocol", "reason": "version_mismatch",
                                    "detail": f"server=1 got={req.get('v')!r}"})
             return
+
+        if is_tcp:
+            # TCP: identity from the envelope's caller_token. Fail closed —
+            # with no tokens configured, TCP mode serves nobody.
+            token = req.pop("caller_token", None)
+            if not cfg.caller_token_map:
+                _write_response(conn, {"v": 1, "request_id": request_id, "ok": False,
+                                       "error": "protocol",
+                                       "reason": "tcp_auth_not_configured",
+                                       "detail": "set GI_CALLER_TOKEN_<name> on the daemon"})
+                return
+            caller = _resolve_token_caller(token, cfg)
+            if caller is None:
+                audit.append(cfg.audit_log_path, {"caller": "tcp_unknown",
+                                                  "outcome": "deny",
+                                                  "reason": "unknown_caller"})
+                _write_response(conn, {"v": 1, "request_id": request_id, "ok": False,
+                                       "error": "protocol", "reason": "unknown_caller",
+                                       "detail": "missing or unrecognized caller_token"})
+                return
 
         # Framed upload: upload_expense_file carries `byte_len` raw bytes after
         # the header line. Read exactly that many (bounded), else drop the
@@ -248,7 +305,45 @@ def _accept_loop(server: socket.socket, cfg: Config, clients: _ClientHolder,
         threading.Thread(target=_worker, daemon=True).start()
 
 
-def _bind_socket(path: Path) -> socket.socket:
+def _is_tcp_addr(addr: Path | str) -> bool:
+    return isinstance(addr, str) and addr.startswith("tcp:")
+
+
+def _parse_tcp_addr(addr: str) -> tuple[str, int]:
+    hp = addr[6:] if addr.startswith("tcp://") else addr[4:]
+    host, port = hp.rsplit(":", 1)
+    return (host or "127.0.0.1"), int(port)
+
+
+def _bind_socket(path: Path | str) -> socket.socket:
+    if _is_tcp_addr(path):
+        host, port = _parse_tcp_addr(str(path))
+        # TCP identity is only a shared token — never expose that beyond
+        # loopback. A routable bind would offer the invoice broker (live
+        # GreenInvoice credentials behind it) to the whole network.
+        if host not in ("127.0.0.1", "localhost", "::1"):
+            raise ValueError(
+                f"refusing to bind greeninvoice broker TCP to non-loopback host "
+                f"{host!r}; use 127.0.0.1"
+            )
+        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            # Windows: stop another local process from stealing the port.
+            server.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        else:
+            server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server.bind((host, port))
+        server.listen(MAX_CONCURRENT * 2)
+        server.settimeout(1.0)
+        return server
+
+    if not hasattr(socket, "AF_UNIX"):
+        raise OSError(
+            "this platform has no AF_UNIX — set "
+            "HERMES_GREENINVOICE_SOCKET=tcp://127.0.0.1:<port> and configure "
+            "GI_CALLER_TOKEN_<name> for each client"
+        )
+    path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
     try:
         os.unlink(str(path))

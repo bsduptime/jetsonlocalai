@@ -17,11 +17,15 @@ cleared on reboot.
 from __future__ import annotations
 
 import base64
-import grp
 import logging
 import os
 import time
 from pathlib import Path
+
+try:
+    import grp
+except ImportError:  # Windows — no POSIX groups; ACLs come from the parent dir
+    grp = None
 
 log = logging.getLogger("hermes_greeninvoice.previews")
 
@@ -30,7 +34,10 @@ _CLIENTS_GROUP = "hermes-greeninvoice-clients"
 
 def _chgrp_clients(path: str, mode: int) -> None:
     """Best-effort: hand group ownership to the clients group so the hermes
-    user can read. No-op if the group doesn't exist (e.g. in tests)."""
+    user can read. No-op if the group doesn't exist (e.g. in tests) or the
+    platform has no POSIX groups (Windows)."""
+    if grp is None or not hasattr(os, "chown"):
+        return
     try:
         gid = grp.getgrnam(_CLIENTS_GROUP).gr_gid
         os.chown(path, -1, gid)
@@ -95,7 +102,11 @@ def spool(cfg, result, request_id: str):
         ensure_dir(cfg)
         prune(cfg)
         path = cfg.previews_dir / f"{_safe_name(request_id)}.pdf"
-        fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o640)
+        # O_BINARY: on Windows the default text mode would rewrite \n bytes
+        # inside the PDF; a no-op flag elsewhere.
+        fd = os.open(str(path),
+                     os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+                     | getattr(os, "O_BINARY", 0), 0o640)
         try:
             os.write(fd, content)
         finally:
