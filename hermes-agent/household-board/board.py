@@ -213,7 +213,8 @@ class Board:
         if not text.startswith("/list"):
             return
         if chat_id not in self.allowed:
-            log.info("ignoring /list from non-allowlisted chat %s", chat_id)
+            log.warning("ignoring /list from non-allowlisted chat %s — add it "
+                        "to HOUSEHOLD_ALLOWED_CHAT_IDS to enable it", chat_id)
             return
         parts = text.split()
         list_name = parts[1].casefold() if len(parts) > 1 else \
@@ -291,10 +292,12 @@ def main() -> int:
         log.error("HOUSEHOLD_BOT_TOKEN unset")
         return 1
     if not allowed:
-        # Fail closed: without an allowlist, anyone who finds the bot could
-        # read and edit the family's list.
-        log.error("HOUSEHOLD_ALLOWED_CHAT_IDS unset — refusing to serve")
-        return 1
+        # Discovery mode — still fail-closed (an empty allowlist serves and
+        # reveals nothing), but keep running so /list attempts get their chat
+        # id logged. That log line IS the setup flow for finding the ids.
+        log.warning("HOUSEHOLD_ALLOWED_CHAT_IDS empty — discovery mode: "
+                    "serving NO chats; send /list in the target chat and "
+                    "copy the id this log prints")
 
     store = load_store()
     registry_path = Path(
