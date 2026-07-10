@@ -1,0 +1,32 @@
+[Unit]
+Description=hermes-household-board (tappable Telegram checklist over the household store)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Runs AS the hermes user: the board shares the plugin's list store under
+# ~hermes/.hermes/household (same trust domain as the plugin itself — the
+# board holds no Hermes credentials, only its own bot token).
+User=hermes
+Group=hermes
+EnvironmentFile=/etc/hermes-household-board/.env
+Environment=HERMES_HOME=/home/hermes/.hermes
+WorkingDirectory=/home/hermes
+ExecStart=/usr/bin/python3 /home/dbexpertai/code/jetsonlocalai/hermes-agent/household-board/board.py
+Restart=on-failure
+RestartSec=5
+
+# Hardening: outbound HTTPS only; writes limited to the household state dir.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/hermes/.hermes/household
+PrivateTmp=true
+RestrictAddressFamilies=AF_INET AF_INET6
+CapabilityBoundingSet=
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+[Install]
+WantedBy=multi-user.target

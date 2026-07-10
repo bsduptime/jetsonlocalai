@@ -132,7 +132,9 @@ def test_corrupt_state_surfaces_cleanly(store, state_dir):
 
 def test_no_tmp_file_left_behind(store, state_dir):
     store.add("shopping", [{"item": "milk"}])
-    assert [p.name for p in state_dir.iterdir()] == ["shopping.json"]
+    # the per-list .lock file is expected; no .tmp must survive a write
+    names = sorted(p.name for p in state_dir.iterdir())
+    assert names == ["shopping.json", "shopping.lock"]
 
 
 def test_item_limits(store):

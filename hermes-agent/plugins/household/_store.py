@@ -13,6 +13,7 @@ same file works on the Jetson and on a Windows mini PC.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -22,6 +23,37 @@ from pathlib import Path
 
 _LIST_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 _LOCK = threading.Lock()
+
+
+@contextlib.contextmanager
+def _os_lock(name: str):
+    """Cross-PROCESS exclusive lock per list. The threading lock only covers
+    this process; the board service (household-board/) shares these files, so
+    read-modify-write cycles must also lock at the OS level or a plugin write
+    and a board tap could silently drop each other's items. flock on POSIX,
+    msvcrt.locking on Windows."""
+    d = state_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    f = open(d / f"{name}.lock", "a+b")
+    try:
+        if os.name == "nt":
+            import msvcrt
+            f.seek(0)
+            msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        yield
+    finally:
+        with contextlib.suppress(OSError):
+            if os.name == "nt":
+                import msvcrt
+                f.seek(0)
+                msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+        f.close()
 MAX_ITEMS = 200
 MAX_ITEM_CHARS = 120
 MAX_QTY_CHARS = 40
@@ -107,7 +139,7 @@ def add(list_name: str, entries: list[dict]) -> dict:
     """entries: [{"item": str, "qty": str?, "added_by": str?}, ...].
     Returns {"added": [...], "already_present": [...], "items": [...]}."""
     name = _validate_list_name(list_name)
-    with _LOCK:
+    with _LOCK, _os_lock(name):
         items = _load(name)
         by_key = {it["key"]: it for it in items}
         added, already = [], []
@@ -159,7 +191,7 @@ def add(list_name: str, entries: list[dict]) -> dict:
 
 def remove(list_name: str, item_names: list[str]) -> dict:
     name = _validate_list_name(list_name)
-    with _LOCK:
+    with _LOCK, _os_lock(name):
         items = _load(name)
         removed, not_found = [], []
         for raw in item_names:
@@ -182,7 +214,7 @@ def check(list_name: str, item_names: list[str], done: bool = True) -> dict:
     stays on the list either way — check-off is state, not deletion, so a
     mis-tap is reversible and the trip's progress is visible."""
     name = _validate_list_name(list_name)
-    with _LOCK:
+    with _LOCK, _os_lock(name):
         items = _load(name)
         updated, not_found = [], []
         for raw in item_names:
@@ -206,7 +238,7 @@ def check(list_name: str, item_names: list[str], done: bool = True) -> dict:
 
 def read(list_name: str) -> dict:
     name = _validate_list_name(list_name)
-    with _LOCK:
+    with _LOCK, _os_lock(name):
         items = _public(_load(name))
         return {"list": name, "items": items,
                 "open_count": sum(1 for it in items if not it.get("done")),
@@ -217,7 +249,7 @@ def clear(list_name: str, scope: str = "all") -> dict:
     if scope not in ("all", "checked"):
         raise StoreError("invalid_scope", scope)
     name = _validate_list_name(list_name)
-    with _LOCK:
+    with _LOCK, _os_lock(name):
         items = _load(name)
         if scope == "checked":
             kept = [it for it in items if not it.get("done")]
