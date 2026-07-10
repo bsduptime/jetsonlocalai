@@ -79,10 +79,13 @@ SHOPPING_LIST = {
     "name": "shopping_list",
     "description": (
         "Read a household list back, exactly as stored (items, optional "
-        "quantities, who added them, when). Call this whenever someone asks "
-        "what's on the list / what to buy, and ALWAYS call it before "
-        "shopping_remove so you pass item names exactly as stored. Takes no "
-        "required arguments."
+        "quantities, who added them, when, and whether already checked off "
+        "as bought — done=true). When presenting, show the OPEN items as "
+        "the list and mention checked ones briefly (\"already picked up: "
+        "…\"). Call this whenever someone asks what's on the list / what to "
+        "buy, and ALWAYS call it before shopping_check or shopping_remove "
+        "so you pass item names exactly as stored. Takes no required "
+        "arguments."
     ),
     "parameters": {
         "type": "object",
@@ -91,15 +94,51 @@ SHOPPING_LIST = {
     },
 }
 
+SHOPPING_CHECK = {
+    "name": "shopping_check",
+    "description": (
+        "Check item(s) off a household list as BOUGHT / picked up — \"got "
+        "the milk\", \"picked up the dog food\", or someone ticking things "
+        "off mid-shop. The item stays on the list marked done (visible as "
+        "checked, reversible), it is NOT deleted — use shopping_remove only "
+        "when something is no longer needed at all. Pass done=false to "
+        "un-check a mistake (\"actually I didn't get the milk\"). Matching "
+        "is exact on the stored item name (case/whitespace don't matter): "
+        "read the list first and pass names as shown there. Items not on "
+        "the list come back in not_found — tell the user rather than "
+        "guessing a different item."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "items": {
+                "type": "array",
+                "minItems": 1,
+                "items": {"type": "string"},
+                "description": "Item names to (un)check, as stored on the list.",
+            },
+            "done": {
+                "type": "boolean",
+                "description": "Omit or true = bought. false = un-check a mistake.",
+            },
+            "list": _LIST_PARAM,
+        },
+        "required": ["items"],
+        "additionalProperties": False,
+    },
+}
+
 SHOPPING_REMOVE = {
     "name": "shopping_remove",
     "description": (
-        "Take item(s) off a household list — because they were bought "
-        "(\"got the milk\") or are no longer needed (\"forget the batteries\"). "
-        "Matching is exact on the stored item name (case/whitespace don't "
-        "matter): read the list first and pass names as shown there. Items "
-        "that aren't on the list come back in not_found — tell the user "
-        "rather than guessing a different item."
+        "Delete item(s) from a household list because they are NO LONGER "
+        "NEEDED — \"forget the batteries\", \"we don't need milk after all\". "
+        "For things that were BOUGHT, use shopping_check instead (keeps a "
+        "visible, reversible record of the trip). Matching is exact on the "
+        "stored item name (case/whitespace don't matter): read the list "
+        "first and pass names as shown there. Items that aren't on the list "
+        "come back in not_found — tell the user rather than guessing a "
+        "different item."
     ),
     "parameters": {
         "type": "object",
@@ -120,22 +159,28 @@ SHOPPING_REMOVE = {
 SHOPPING_CLEAR = {
     "name": "shopping_clear",
     "description": (
-        "Empty a household list in one go — for \"we did the whole shop, "
-        "clear the list\". This discards every item, so it requires "
-        "confirm=true: ask the user to confirm first unless they already "
-        "clearly said to clear everything. For crossing off individual "
-        "items, use shopping_remove instead."
+        "Tidy a household list in one go. scope=\"checked\" (the usual case, "
+        "after a shopping trip: \"clear what we bought\") deletes only the "
+        "checked-off items and needs no confirmation. scope=\"all\" wipes the "
+        "entire list including open items — that discards real requests, so "
+        "it requires confirm=true: ask the user first unless they clearly "
+        "said to clear everything. For single items use shopping_check / "
+        "shopping_remove."
     ),
     "parameters": {
         "type": "object",
         "properties": {
+            "scope": {
+                "type": "string",
+                "enum": ["checked", "all"],
+                "description": "\"checked\" = drop bought items only (default). \"all\" = wipe the list.",
+            },
             "confirm": {
                 "type": "boolean",
-                "description": "Must be true. Set only after the user clearly asked to clear the whole list.",
+                "description": "Required true for scope=\"all\" only, after the user clearly asked.",
             },
             "list": _LIST_PARAM,
         },
-        "required": ["confirm"],
         "additionalProperties": False,
     },
 }

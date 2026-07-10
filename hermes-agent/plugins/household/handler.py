@@ -45,6 +45,22 @@ def shopping_add(args: dict, **_kwargs) -> str:
     return _run(_store.add, list_name, items)
 
 
+def shopping_check(args: dict, **_kwargs) -> str:
+    items = args.get("items")
+    if not isinstance(items, list) or not items \
+            or not all(isinstance(i, str) for i in items):
+        return _bad("invalid_field_type", "items")
+    done = args.get("done")
+    if done is None:
+        done = True
+    if not isinstance(done, bool):
+        return _bad("invalid_field_type", "done")
+    list_name = args.get("list") or "shopping"
+    if not isinstance(list_name, str):
+        return _bad("invalid_field_type", "list")
+    return _run(_store.check, list_name, items, done)
+
+
 def shopping_remove(args: dict, **_kwargs) -> str:
     items = args.get("items")
     if not isinstance(items, list) or not items \
@@ -64,13 +80,17 @@ def shopping_list(args: dict, **_kwargs) -> str:
 
 
 def shopping_clear(args: dict, **_kwargs) -> str:
-    if args.get("confirm") is not True:
+    scope = args.get("scope") or "checked"
+    if scope not in ("checked", "all"):
+        return _bad("invalid_field_type", "scope")
+    if scope == "all" and args.get("confirm") is not True:
         return json.dumps({
             "ok": False, "error": "not_allowed",
             "reason": "confirmation_required",
-            "detail": "ask the user, then call again with confirm=true",
+            "detail": "scope=all discards open items — ask the user, then "
+                      "call again with confirm=true",
         }, ensure_ascii=False)
     list_name = args.get("list") or "shopping"
     if not isinstance(list_name, str):
         return _bad("invalid_field_type", "list")
-    return _run(_store.clear, list_name)
+    return _run(_store.clear, list_name, scope)

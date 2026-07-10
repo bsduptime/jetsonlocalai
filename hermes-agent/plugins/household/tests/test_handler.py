@@ -39,17 +39,41 @@ def test_remove_requires_string_items(handler):
     assert out["reason"] == "invalid_field_type"
 
 
-def test_clear_requires_confirm(handler):
+def test_clear_all_requires_confirm(handler):
     _call(handler.shopping_add, {"items": [{"item": "milk"}]})
-    out = _call(handler.shopping_clear, {})
+    out = _call(handler.shopping_clear, {"scope": "all"})
     assert out["ok"] is False
     assert out["reason"] == "confirmation_required"
     # list untouched
     assert len(_call(handler.shopping_list, {})["items"]) == 1
 
-    out = _call(handler.shopping_clear, {"confirm": True})
+    out = _call(handler.shopping_clear, {"scope": "all", "confirm": True})
     assert out["ok"] is True
     assert out["cleared"] == 1
+
+
+def test_clear_default_scope_is_checked_no_confirm(handler):
+    _call(handler.shopping_add, {"items": [{"item": "milk"}, {"item": "eggs"}]})
+    _call(handler.shopping_check, {"items": ["milk"]})
+    out = _call(handler.shopping_clear, {})
+    assert out["ok"] is True
+    assert out["cleared"] == 1
+    assert [i["item"] for i in out["items"]] == ["eggs"]
+
+
+def test_check_and_uncheck(handler):
+    _call(handler.shopping_add, {"items": [{"item": "milk"}]})
+    out = _call(handler.shopping_check, {"items": ["milk"]})
+    assert out["ok"] is True
+    assert out["checked"] == ["milk"]
+
+    out = _call(handler.shopping_check, {"items": ["milk"], "done": False})
+    assert out["ok"] is True
+    assert out["unchecked"] == ["milk"]
+
+    out = _call(handler.shopping_check, {"items": [1], "done": True})
+    assert out["ok"] is False
+    assert out["reason"] == "invalid_field_type"
 
 
 def test_named_list_passthrough(handler):

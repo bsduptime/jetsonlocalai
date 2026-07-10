@@ -124,7 +124,16 @@ def add(list_name: str, entries: list[dict]) -> dict:
                         if added_by is not None else None)
             existing = by_key.get(key)
             if existing is not None:
-                # Same item again: not an error, and a fresher qty wins
+                if existing.get("done"):
+                    # It was bought and is being asked for again — that's a
+                    # fresh need, not a duplicate: re-open it.
+                    existing.pop("done", None)
+                    if qty:
+                        existing["qty"] = qty
+                    changed = True
+                    added.append(existing["item"])
+                    continue
+                # Same open item again: not an error, and a fresher qty wins
                 # ("milk" ... later "2 milk") — everything else is a no-op.
                 if qty and existing.get("qty") != qty:
                     existing["qty"] = qty
@@ -168,18 +177,57 @@ def remove(list_name: str, item_names: list[str]) -> dict:
                 "items": _public(items)}
 
 
-def read(list_name: str) -> dict:
-    name = _validate_list_name(list_name)
-    with _LOCK:
-        return {"list": name, "items": _public(_load(name))}
-
-
-def clear(list_name: str) -> dict:
+def check(list_name: str, item_names: list[str], done: bool = True) -> dict:
+    """Mark items bought (done=True) or re-open them (done=False). The item
+    stays on the list either way — check-off is state, not deletion, so a
+    mis-tap is reversible and the trip's progress is visible."""
     name = _validate_list_name(list_name)
     with _LOCK:
         items = _load(name)
-        _save(name, [])
-        return {"list": name, "cleared": len(items)}
+        updated, not_found = [], []
+        for raw in item_names:
+            text = _clean_text(raw, MAX_ITEM_CHARS, "item")
+            key = normalize_key(text)
+            match = next((it for it in items if it["key"] == key), None)
+            if match is None:
+                not_found.append(text)
+                continue
+            if done:
+                match["done"] = True
+            else:
+                match.pop("done", None)
+            updated.append(match["item"])
+        if updated:
+            _save(name, items)
+        field = "checked" if done else "unchecked"
+        return {"list": name, field: updated, "not_found": not_found,
+                "items": _public(items)}
+
+
+def read(list_name: str) -> dict:
+    name = _validate_list_name(list_name)
+    with _LOCK:
+        items = _public(_load(name))
+        return {"list": name, "items": items,
+                "open_count": sum(1 for it in items if not it.get("done")),
+                "checked_count": sum(1 for it in items if it.get("done"))}
+
+
+def clear(list_name: str, scope: str = "all") -> dict:
+    if scope not in ("all", "checked"):
+        raise StoreError("invalid_scope", scope)
+    name = _validate_list_name(list_name)
+    with _LOCK:
+        items = _load(name)
+        if scope == "checked":
+            kept = [it for it in items if not it.get("done")]
+        else:
+            kept = []
+        removed = len(items) - len(kept)
+        if removed:
+            _save(name, kept)
+        return {"list": name, "cleared": removed, "scope": scope,
+                "items": _public(kept)}
 
 
 def _public(items: list[dict]) -> list[dict]:

@@ -47,11 +47,52 @@ def test_remove_exact_and_not_found(store):
     assert [i["item"] for i in out["items"]] == ["eggs"]
 
 
-def test_clear(store):
+def test_clear_all(store):
     store.add("shopping", [{"item": "milk"}, {"item": "eggs"}])
-    out = store.clear("shopping")
+    out = store.clear("shopping", "all")
     assert out["cleared"] == 2
     assert store.read("shopping")["items"] == []
+
+
+def test_check_uncheck_flow(store):
+    store.add("shopping", [{"item": "milk"}, {"item": "eggs"}])
+    out = store.check("shopping", ["Milk", "batteries"])
+    assert out["checked"] == ["milk"]
+    assert out["not_found"] == ["batteries"]
+
+    read = store.read("shopping")
+    assert read["open_count"] == 1
+    assert read["checked_count"] == 1
+    assert next(i for i in read["items"] if i["item"] == "milk")["done"] is True
+
+    out = store.check("shopping", ["milk"], done=False)
+    assert out["unchecked"] == ["milk"]
+    assert store.read("shopping")["checked_count"] == 0
+
+
+def test_readd_checked_item_reopens_it(store):
+    store.add("shopping", [{"item": "milk"}])
+    store.check("shopping", ["milk"])
+    out = store.add("shopping", [{"item": "Milk", "qty": "2"}])
+    assert out["added"] == ["milk"]          # re-opened, not "already there"
+    assert out["already_present"] == []
+    item = store.read("shopping")["items"][0]
+    assert "done" not in item
+    assert item["qty"] == "2"
+
+
+def test_clear_checked_keeps_open_items(store):
+    store.add("shopping", [{"item": "milk"}, {"item": "eggs"}, {"item": "bread"}])
+    store.check("shopping", ["milk", "bread"])
+    out = store.clear("shopping", "checked")
+    assert out["cleared"] == 2
+    assert [i["item"] for i in out["items"]] == ["eggs"]
+
+
+def test_clear_invalid_scope(store):
+    with pytest.raises(store.StoreError) as e:
+        store.clear("shopping", "bought")
+    assert e.value.reason == "invalid_scope"
 
 
 def test_persists_across_module_state(store, state_dir):

@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import logging
 
-from .handler import shopping_add, shopping_clear, shopping_list, shopping_remove
-from .schemas import SHOPPING_ADD, SHOPPING_CLEAR, SHOPPING_LIST, SHOPPING_REMOVE
+from .handler import (shopping_add, shopping_check, shopping_clear,
+                      shopping_list, shopping_remove)
+from .schemas import (SHOPPING_ADD, SHOPPING_CHECK, SHOPPING_CLEAR,
+                      SHOPPING_LIST, SHOPPING_REMOVE)
 
 log = logging.getLogger("hermes.plugins.household")
 
@@ -23,6 +25,12 @@ def register(ctx) -> None:
             toolset="household",
             schema=SHOPPING_ADD,
             handler=shopping_add,
+        )
+        ctx.register_tool(
+            name="shopping_check",
+            toolset="household",
+            schema=SHOPPING_CHECK,
+            handler=shopping_check,
         )
         ctx.register_tool(
             name="shopping_remove",
@@ -42,7 +50,7 @@ def register(ctx) -> None:
             schema=SHOPPING_CLEAR,
             handler=shopping_clear,
         )
-        log.info("household: shopping_add/remove/list/clear tools registered")
+        log.info("household: shopping_add/check/remove/list/clear tools registered")
     except Exception:
         log.exception("household: failed to register tools")
         raise

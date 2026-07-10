@@ -10,9 +10,12 @@ description: |
   list the family reads back is always exactly what was stored.
 
   - shopping_add: add item(s) on a clear purchase/replenish request.
-  - shopping_list: read a list back, exactly as stored.
-  - shopping_remove: take item(s) off (bought / no longer needed).
-  - shopping_clear: wipe a list after a full shopping trip (confirm-gated).
+  - shopping_list: read a list back, exactly as stored (open vs. checked).
+  - shopping_check: check item(s) off as bought — reversible state, not
+    deletion; re-adding a checked item re-opens it (fresh need).
+  - shopping_remove: delete item(s) that are no longer needed at all.
+  - shopping_clear: scope="checked" drops bought items (no confirm);
+    scope="all" wipes the list (confirm-gated).
 
   One list namespace per Hermes instance (instance = one family), so the
   group chat and a private chat with the same agent see the same list.
@@ -21,6 +24,7 @@ description: |
 author: David Klippel
 provides_tools:
   - shopping_add
+  - shopping_check
   - shopping_remove
   - shopping_list
   - shopping_clear
