@@ -210,12 +210,20 @@ class Board:
     def handle_message(self, msg: dict) -> None:
         chat_id = str(msg.get("chat", {}).get("id", ""))
         text = (msg.get("text") or "").strip()
-        if not text.startswith("/list"):
+        # Telegram delivers /commands even with privacy mode ON — so /add
+        # works while the bot stays deaf to the actual conversation.
+        cmd = text.split()[0].split("@")[0] if text.startswith("/") else ""
+        if cmd not in ("/list", "/add"):
             return
         if chat_id not in self.allowed:
-            log.warning("ignoring /list from non-allowlisted chat %s — add it "
-                        "to HOUSEHOLD_ALLOWED_CHAT_IDS to enable it", chat_id)
+            log.warning("ignoring %s from non-allowlisted chat %s — add it "
+                        "to HOUSEHOLD_ALLOWED_CHAT_IDS to enable it", cmd, chat_id)
             return
+
+        if cmd == "/add":
+            self._handle_add(chat_id, text)
+            return
+
         parts = text.split()
         list_name = parts[1].casefold() if len(parts) > 1 else \
             (self.registry.get(chat_id) or {}).get("list", "shopping")
@@ -226,6 +234,35 @@ class Board:
                           text=f"'{parts[1]}' is not a valid list name")
             return
         self.post_board(chat_id, list_name)
+
+    def _handle_add(self, chat_id: str, text: str) -> None:
+        """/add milk, dog food, 2 eggs — comma-separated items onto this
+        chat's board list (default shopping). Deterministic: no language
+        smarts here; nuanced capture stays with the agent."""
+        payload = text.split(None, 1)[1].strip() if len(text.split(None, 1)) > 1 else ""
+        if not payload:
+            self.api.call("sendMessage", chat_id=chat_id,
+                          text="usage: /add milk, dog food, batteries")
+            return
+        list_name = (self.registry.get(chat_id) or {}).get("list", "shopping")
+        entries = [{"item": p.strip()} for p in payload.split(",") if p.strip()]
+        try:
+            out = self.store.add(list_name, entries)
+        except self.store.StoreError as e:
+            self.api.call("sendMessage", chat_id=chat_id,
+                          text=f"could not add: {e.reason}")
+            return
+        bits = []
+        if out["added"]:
+            bits.append("added: " + ", ".join(out["added"]))
+        if out["already_present"]:
+            bits.append("already on it: " + ", ".join(out["already_present"]))
+        self.api.call("sendMessage", chat_id=chat_id,
+                      text="  ·  ".join(bits) or "nothing to add")
+        if self.registry.get(chat_id):
+            self.refresh_board(chat_id)
+        else:
+            self.post_board(chat_id, list_name)
 
     def handle_callback(self, cq: dict) -> None:
         cq_id = cq.get("id")

@@ -167,6 +167,33 @@ def test_store_change_triggers_refresh(board, store):
     assert len(api.of("editMessageText")) > edits_before
 
 
+def test_add_command(board, store):
+    b, api = board
+    b.handle_message({"chat": {"id": 111}, "text": "/add milk, dog food, milk"})
+    items = store.read("shopping")["items"]
+    assert [i["item"] for i in items] == ["milk", "dog food"]
+    sent = [p["text"] for p in api.of("sendMessage") if "added" in p.get("text", "")]
+    assert any("milk, dog food" in t for t in sent)
+    assert any("already on it: milk" in p.get("text", "")
+               for p in api.of("sendMessage"))
+    # no board existed yet -> /add posts one
+    assert b.registry["111"]["list"] == "shopping"
+
+
+def test_add_command_usage_and_allowlist(board, store):
+    b, api = board
+    b.handle_message({"chat": {"id": 111}, "text": "/add"})
+    assert any("usage:" in p.get("text", "") for p in api.of("sendMessage"))
+    b.handle_message({"chat": {"id": 999}, "text": "/add milk"})
+    assert store.read("shopping")["items"] == []
+
+
+def test_add_command_with_bot_suffix(board, store):
+    b, api = board
+    b.handle_message({"chat": {"id": 111}, "text": "/add@FamilyListBot eggs"})
+    assert [i["item"] for i in store.read("shopping")["items"]] == ["eggs"]
+
+
 def test_named_list_command(board, store):
     b, api = board
     store.add("pharmacy", [{"item": "plasters"}])
