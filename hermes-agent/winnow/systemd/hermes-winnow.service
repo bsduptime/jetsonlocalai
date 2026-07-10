@@ -1,0 +1,68 @@
+[Unit]
+# Hermes instance for the Winnow business secretary — dedicated user, the
+# TIGHTEST sandbox of the three instances: no repos bound in at all. This
+# agent talks (Telegram), drafts/issues via the greeninvoice broker, and
+# schedules via the business calendar relay. It owns no files but its own.
+Description=Hermes gateway — Winnow business secretary (hardened, user=hermes-winnow)
+Documentation=file:///home/dbexpertai/code/jetsonlocalai/hermes-agent/winnow/README.md
+After=network-online.target hermes-greeninvoice.service hermes-calendar-winnow.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=hermes-winnow
+Group=hermes-winnow
+WorkingDirectory=/home/hermes-winnow/.hermes
+
+Environment="PATH=/home/hermes-winnow/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="HOME=/home/hermes-winnow"
+Environment="HERMES_HOME=/home/hermes-winnow/.hermes"
+# Point the familycal plugin at the BUSINESS calendar relay, not the family one.
+Environment="HERMES_CALENDAR_SOCKET=/run/hermes-calendar-winnow/sock"
+# The greeninvoice broker is shared (same company books as Elena's access);
+# identity separation happens by UID: CALLER_UID_winnow in the broker's env.
+Environment="HERMES_GREENINVOICE_SOCKET=/run/hermes-greeninvoice/sock"
+# Preview PDFs the broker spools for attaching/sending.
+Environment="HERMES_MEDIA_ALLOW_DIRS=/run/hermes-greeninvoice/previews"
+
+# Socket/preview access to the two brokers.
+SupplementaryGroups=hermes-greeninvoice-clients hermes-calendar-winnow-clients
+
+ExecStart=/home/hermes-winnow/.local/bin/hermes gateway run
+
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=240
+
+# --- Filesystem isolation ---------------------------------------------------
+# ONLY the instance's own home. No /home/dbexpertai, no repos, no other
+# agents' state. (Broker sockets live under /run, reachable via the groups.)
+ProtectHome=tmpfs
+BindPaths=/home/hermes-winnow
+ProtectSystem=strict
+ReadWritePaths=/home/hermes-winnow
+PrivateTmp=true
+
+# --- Kernel surface hardening ------------------------------------------------
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+
+# --- Privilege boundaries ------------------------------------------------------
+NoNewPrivileges=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# Outbound HTTPS (Telegram + LLM) and the local broker UDS sockets.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+OOMScoreAdjust=-50
+
+[Install]
+WantedBy=multi-user.target

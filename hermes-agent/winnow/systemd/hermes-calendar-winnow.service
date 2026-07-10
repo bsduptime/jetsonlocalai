@@ -1,0 +1,47 @@
+[Unit]
+# hermes-calendar-winnow — a SECOND calendar-relay instance, for the Winnow
+# BUSINESS calendar. Same code as hermes-calendar (PYTHONPATH below), fully
+# separate config/credentials/socket/state: the business OAuth token and the
+# family token never share a directory, and each agent can only reach its
+# own relay's socket (separate client groups).
+Description=hermes-calendar-winnow (privilege-separated BUSINESS calendar broker)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+SupplementaryGroups=hermes-calendar-winnow-clients hermes-calendar-winnow-config
+
+ConfigurationDirectory=hermes-calendar-winnow
+ConfigurationDirectoryMode=0750
+StateDirectory=hermes-calendar-winnow
+StateDirectoryMode=0700
+RuntimeDirectory=hermes-calendar-winnow
+RuntimeDirectoryMode=0750
+
+WorkingDirectory=%S/hermes-calendar-winnow
+EnvironmentFile=/etc/hermes-calendar-winnow/.env
+Environment="HERMES_CALENDAR_SOCKET=/run/hermes-calendar-winnow/sock"
+Environment="HERMES_CALENDAR_CLIENTS_GROUP=hermes-calendar-winnow-clients"
+Environment="CALENDAR_CONTACTS_FILE=/etc/hermes-calendar-winnow/contacts.yaml"
+Environment="CALENDAR_STATE_DIR=/var/lib/hermes-calendar-winnow"
+# Shared code install from setup-hermes-calendar.sh — config differs, code doesn't.
+Environment="PYTHONPATH=/usr/local/lib/hermes-calendar"
+
+ExecStart=/usr/bin/python3 -m hermes_calendar.server
+
+Restart=on-failure
+RestartSec=5
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+[Install]
+WantedBy=multi-user.target

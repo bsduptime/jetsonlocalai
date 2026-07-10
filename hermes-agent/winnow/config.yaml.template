@@ -1,0 +1,17 @@
+# ~/.hermes/config.yaml template for the hermes-winnow instance (the Winnow
+# business secretary). Installed by setup-winnow.sh; placeholders marked TODO.
+# The LLM provider block is created interactively by `hermes setup` (run as
+# hermes-winnow) and merged by hermes itself.
+
+telegram:
+  enabled: true
+  # Fail-closed allowlist: ONLY these Telegram user IDs can talk to the
+  # secretary — David and Lihi. Get an ID by messaging @userinfobot.
+  allow_from:
+    - "TODO_DAVID_TELEGRAM_USER_ID"
+    - "TODO_LIHI_TELEGRAM_USER_ID"
+
+# Tools: this instance gets ONLY the greeninvoice + familycal plugins
+# (symlinked into /home/hermes-winnow/.hermes/plugins by setup-winnow.sh).
+# The familycal plugin is pointed at the BUSINESS calendar relay via
+# HERMES_CALENDAR_SOCKET in the systemd unit — not the family one.
