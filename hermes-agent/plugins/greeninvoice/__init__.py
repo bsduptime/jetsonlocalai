@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 
-from . import hooks, visiongate
+from . import confirmgate, hooks
 from .handler import HANDLERS
 from .schemas import ALL_SCHEMAS
 
@@ -20,6 +20,30 @@ log = logging.getLogger("hermes.plugins.greeninvoice")
 
 
 def register(ctx) -> None:
+    # confirmgate: require David to confirm the numbers in Telegram before
+    # gi_create_expense writes an expense to his real Morning books. No vision model.
+    #
+    # Register the gate FIRST, and make its failure FATAL to the whole plugin. If the hook
+    # can't be installed we must NOT go on to register gi_create_expense — an ungated
+    # money-write tool is worse than an absent one. A re-raise here means the plugin is
+    # simply absent (consistent with the tool-registration policy below), which fails
+    # loudly at startup instead of silently exposing an ungated write.
+    #
+    # GI_EXPENSE_CONFIRM=0 skips the gate deliberately (operator-only, env, not
+    # model-reachable) — the only supported way to run creates ungated.
+    if confirmgate.ENABLED:
+        try:
+            ctx.register_hook("pre_tool_call", hooks.pre_tool_call)
+            log.info("greeninvoice: expense-confirm gate registered")
+        except Exception:
+            log.exception(
+                "greeninvoice: FAILED to register the expense-confirm gate — refusing to "
+                "register the expense tools ungated. Set GI_EXPENSE_CONFIRM=0 to run "
+                "without the gate deliberately.")
+            raise
+    else:
+        log.warning("GI_EXPENSE_CONFIRM=0 — expense creates are NOT confirmed with David")
+
     try:
         by_name = {s["name"]: s for s in ALL_SCHEMAS}
         for name, handler in HANDLERS.items():
@@ -33,29 +57,3 @@ def register(ctx) -> None:
     except Exception:
         log.exception("hermes-greeninvoice: failed to register tools")
         raise
-
-    # visiongate: a local vision model classifies inbound images before the LLM turn
-    # (advisory) and gates the expense upload (enforcing, escalates to a human).
-    # Registration failure here must NOT take the tools down — but it DOES leave the
-    # upload ungated, so say so loudly. GI_VISIONGATE=0 disables it deliberately.
-    if not visiongate.ENABLED:
-        log.warning("visiongate: DISABLED by GI_VISIONGATE=0 — expense uploads are ungated")
-        return
-    try:
-        ctx.register_hook("pre_gateway_dispatch", hooks.pre_gateway_dispatch)
-        ctx.register_hook("pre_tool_call", hooks.pre_tool_call)
-        # Deliberately loud: this box emits nothing at INFO, and "did the security gate
-        # actually come up?" must be answerable from the journal.
-        # NOTE: do NOT try to log "registered" here — plugin registration runs before
-        # Hermes attaches its logging handlers, so anything logged at this point is
-        # swallowed. hooks._announce_once() emits the live line on the first hook call
-        # instead, which also proves the hook is actually being invoked.
-        log.info("visiongate: hooks registered (model=%s)", visiongate.MODEL)
-        # Load the model now, in the background, so the first receipt after a restart
-        # doesn't pay a cold load. Never blocks startup.
-        visiongate.warm_model()
-    except Exception:
-        log.exception(
-            "visiongate: FAILED to register hooks — expense uploads will be REFUSED "
-            "(the upload handler requires a clearance that only the gate can issue). "
-            "Set GI_VISIONGATE=0 to run without the gate.")
