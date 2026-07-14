@@ -53,6 +53,13 @@ log = logging.getLogger("hermes.plugins.greeninvoice.visiongate")
 
 # ---- config (all operator-controlled; none of it is reachable by the LLM) ----
 ENABLED = os.environ.get("GI_VISIONGATE", "1") != "0"
+
+# Observation mode: NOTHING uploads without an explicit human yes, not even a file the
+# classifier is confident is a real receipt. The broker runs against the LIVE Morning
+# account (GI_ENV=production, GI_DRY_RUN=false) — there is no sandbox — so while we are
+# still benchmarking the model on real receipts, "it looked like an invoice" is not a
+# good enough reason to write to David's actual books. Turn off once the model is trusted.
+OBSERVE = os.environ.get("VISIONGATE_OBSERVE", "0") == "1"
 OLLAMA_URL = os.environ.get("VISIONGATE_OLLAMA", "http://127.0.0.1:11434")
 MODEL = os.environ.get("VISIONGATE_MODEL", "qwen3-vl:4b-instruct-q8_0")
 TIMEOUT = float(os.environ.get("VISIONGATE_TIMEOUT", "20"))
@@ -296,24 +303,44 @@ def cached(digest: str) -> dict | None:
     return None
 
 
+def audit(msg: str, *args) -> None:
+    """Every gate decision is an auditable security event, so it must actually be
+    visible. Hermes emits nothing at INFO on this box (verified: zero INFO lines in the
+    journal), so an INFO line here would vanish silently — including the one that says
+    whether the gate registered at all. These are a handful of lines a day; log them
+    where they can be read: `journalctl -u hermes | grep VISIONGATE`.
+    """
+    log.warning("VISIONGATE " + msg, *args)
+
+
 def _classify_path(path: str) -> None:
     """Read + classify in a WORKER thread. Populates the caches; returns nothing."""
+    t0 = time.time()
     try:
         st = os.stat(path)
         if st.st_size <= 0 or st.st_size > MAX_BYTES:
+            audit("skip file=%s reason=size bytes=%d", os.path.basename(path), st.st_size)
             return
         with open(path, "rb") as fh:
             data = fh.read(MAX_BYTES)
         ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
         v = classify(data, ext)
-        if v:
-            with _lock:
-                _pathidx[(path, st.st_mtime, st.st_size)] = v["sha256"]
-                _pathidx.move_to_end((path, st.st_mtime, st.st_size))
-                while len(_pathidx) > CACHE_MAX:
-                    _pathidx.popitem(last=False)
+        if not v:
+            audit("verdict file=%s kind=UNKNOWN (model down, timed out, or unparseable)"
+                  " took=%.1fs", os.path.basename(path), time.time() - t0)
+            return
+        with _lock:
+            _pathidx[(path, st.st_mtime, st.st_size)] = v["sha256"]
+            _pathidx.move_to_end((path, st.st_mtime, st.st_size))
+            while len(_pathidx) > CACHE_MAX:
+                _pathidx.popitem(last=False)
+        audit("verdict file=%s kind=%s tax_document=%s confidence=%.2f language=%s "
+              "bytes=%d sha=%s took=%.1fs",
+              os.path.basename(path), v["kind"], v["is_tax_document"], v["confidence"],
+              v["language"], st.st_size, v["sha256"][:12], time.time() - t0)
     except Exception:
-        log.warning("visiongate: background classify failed for %s", path, exc_info=True)
+        audit("ERROR background classify failed file=%s", os.path.basename(path))
+        log.warning("visiongate traceback", exc_info=True)
     finally:
         with _lock:
             _pending.discard(path)

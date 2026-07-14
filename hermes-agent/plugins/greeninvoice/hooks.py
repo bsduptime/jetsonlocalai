@@ -112,8 +112,24 @@ def pre_tool_call(tool_name: str = "", args=None, **_kw):
         # human says yes.
         vg.clear_for_upload(digest)
 
-        if verdict and verdict["is_tax_document"]:
+        vg.audit("gate tool=%s file=%s verdict=%s sha=%s",
+                 tool_name, os.path.basename(path),
+                 verdict["kind"] if verdict else "UNKNOWN", digest[:12])
+
+        if verdict and verdict["is_tax_document"] and not vg.OBSERVE:
             return None  # looks like a real invoice/receipt — proceed silently
+
+        if vg.OBSERVE:
+            # Observation mode: even a perfect receipt stops here and asks. Used while
+            # benchmarking against real receipts, so nothing can reach the live Morning
+            # account (GI_DRY_RUN=false — these are REAL writes) by accident.
+            return {"action": "approve",
+                    "message": (f"[visiongate OBSERVE mode] Local check says: "
+                                f"{verdict['kind'] if verdict else 'UNKNOWN'}"
+                                + (f" (confidence {verdict['confidence']:.2f})"
+                                   if verdict else "")
+                                + ". Upload to Morning for real?"),
+                    "rule_key": "visiongate:observe"}
 
         if verdict:
             # Enum + number only. The approval message is shown to David but ALSO comes

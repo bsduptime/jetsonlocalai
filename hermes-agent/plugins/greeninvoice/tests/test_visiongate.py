@@ -284,3 +284,25 @@ def test_path_index_reclassifies_an_edited_file(monkeypatch, tmp_path):
 
     f.write_bytes(b"second-and-longer")     # size+mtime change -> index key changes
     assert vg.lookup_by_path(str(f)) is None
+
+
+# ---- observe mode: nothing reaches the live Morning account without a human yes ----
+
+def test_observe_mode_asks_even_for_a_perfect_receipt(_isolate_env, monkeypatch):
+    """The broker writes to the REAL Morning account (no sandbox exists). While we are
+    still benchmarking, "the model was confident" is not sufficient authority to write to
+    David's books — a human confirms every single upload."""
+    monkeypatch.setattr(vg, "OBSERVE", True)
+    monkeypatch.setattr(vg, "classify", lambda d, e: _verdict("receipt", conf=0.99))
+    d = hooks.pre_tool_call(tool_name="gi_upload_expense_file",
+                            args={"path": _write(_isolate_env)})
+    assert d["action"] == "approve"
+    assert d["rule_key"] == "visiongate:observe"
+    assert "OBSERVE" in d["message"]
+
+
+def test_observe_mode_off_lets_a_receipt_through(_isolate_env, monkeypatch):
+    monkeypatch.setattr(vg, "OBSERVE", False)
+    monkeypatch.setattr(vg, "classify", lambda d, e: _verdict("receipt", conf=0.99))
+    assert hooks.pre_tool_call(tool_name="gi_upload_expense_file",
+                               args={"path": _write(_isolate_env)}) is None

@@ -44,7 +44,10 @@ def register(ctx) -> None:
     try:
         ctx.register_hook("pre_gateway_dispatch", hooks.pre_gateway_dispatch)
         ctx.register_hook("pre_tool_call", hooks.pre_tool_call)
-        log.info("visiongate: hooks registered (model=%s)", visiongate.MODEL)
+        # Deliberately loud: this box emits nothing at INFO, and "did the security gate
+        # actually come up?" must be answerable from the journal.
+        visiongate.audit("hooks registered model=%s observe=%s",
+                         visiongate.MODEL, visiongate.OBSERVE)
     except Exception:
         log.exception(
             "visiongate: FAILED to register hooks — expense uploads will be REFUSED "
