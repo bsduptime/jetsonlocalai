@@ -48,6 +48,9 @@ def register(ctx) -> None:
         # actually come up?" must be answerable from the journal.
         visiongate.audit("hooks registered model=%s observe=%s",
                          visiongate.MODEL, visiongate.OBSERVE)
+        # Load the model now, in the background, so the first receipt after a restart
+        # doesn't pay a cold load. Never blocks startup.
+        visiongate.warm_model()
     except Exception:
         log.exception(
             "visiongate: FAILED to register hooks — expense uploads will be REFUSED "

@@ -299,3 +299,13 @@ def test_dispatch_prewarms_an_unclassified_image(monkeypatch, tmp_path):
     monkeypatch.setattr(vg, "warm", warmed.append)
     hooks.pre_gateway_dispatch(event=_Event("hi", [str(f)]))
     assert warmed == [str(f)]
+
+
+def test_warm_model_never_blocks_or_raises_when_ollama_is_down(monkeypatch):
+    """A dead model must not stop the plugin loading. The gate degrades to asking a
+    human, which is the right failure direction."""
+    monkeypatch.setattr(vg.urllib.request, "urlopen",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError("refused")))
+    t0 = time.time()
+    vg.warm_model()                      # fire-and-forget
+    assert time.time() - t0 < 0.5        # returned immediately

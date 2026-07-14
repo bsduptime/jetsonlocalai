@@ -63,7 +63,14 @@ ENABLED = os.environ.get("GI_VISIONGATE", "1") != "0"
 OBSERVE = os.environ.get("VISIONGATE_OBSERVE", "0") == "1"
 OLLAMA_URL = os.environ.get("VISIONGATE_OLLAMA", "http://127.0.0.1:11434")
 MODEL = os.environ.get("VISIONGATE_MODEL", "qwen3-vl:4b-instruct-q8_0")
-TIMEOUT = float(os.environ.get("VISIONGATE_TIMEOUT", "20"))
+# Generous on purpose. Warm inference is ~5s, but a COLD load costs ~10s (and more on a
+# cold page cache after a reboot). Every classification runs on a worker thread — never
+# the event loop — so a long timeout delays only the one tool call that is waiting for it.
+# Too tight a timeout would silently turn "the model was still loading" into "unknown",
+# which escalates to a human approval prompt: safe, but it would nag David after every
+# restart for no reason. A genuinely dead Ollama is caught by the circuit breaker after
+# BREAKER_FAILS attempts, so we do not pay this wait repeatedly.
+TIMEOUT = float(os.environ.get("VISIONGATE_TIMEOUT", "60"))
 
 # Ollama defaults the KV cache to the model's FULL native context, which allocates
 # ~49 GB for this 5 GB model and has already hard-frozen this box once. The cap is
@@ -294,6 +301,37 @@ def classify(data: bytes, ext: str) -> dict | None:
         while len(_cache) > CACHE_MAX:
             _cache.popitem(last=False)
     return verdict
+
+
+def warm_model() -> None:
+    """Ask Ollama to load the model, in the background, at plugin registration.
+
+    Ollama unloads after OLLAMA_KEEP_ALIVE (30m idle), and a hermes restart also empties
+    our verdict cache — so the first receipt after a restart would otherwise pay a ~10s
+    cold load with nothing pre-warming it. Normally the dispatch hook hides that cost by
+    starting classification the moment an image arrives, while Elena is still reading it.
+    This just closes the restart gap.
+
+    Deliberately fire-and-forget: if the model or Ollama is down, we must NOT prevent the
+    plugin from loading. The gate degrades to asking a human, which is the correct
+    failure direction anyway.
+    """
+    def _ping():
+        try:
+            body = json.dumps({"model": MODEL, "keep_alive": "30m"}).encode()
+            req = urllib.request.Request(
+                f"{OLLAMA_URL}/api/generate", body, {"Content-Type": "application/json"})
+            t0 = time.time()
+            urllib.request.urlopen(req, timeout=180).read()
+            audit("model warm model=%s took=%.1fs", MODEL, time.time() - t0)
+        except Exception as e:
+            audit("model warm FAILED model=%s err=%s — the gate will ask a human until "
+                  "the model answers", MODEL, type(e).__name__)
+
+    try:
+        _pool.submit(_ping)
+    except RuntimeError:
+        pass
 
 
 def cached(digest: str) -> dict | None:
