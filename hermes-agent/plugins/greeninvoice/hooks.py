@@ -30,52 +30,44 @@ def _ext(path: str) -> str:
 
 
 def pre_gateway_dispatch(event=None, **_kw):
-    """Classify inbound images/PDFs and tell Elena what she is looking at.
+    """Pre-warm the classifier for inbound images. Observes only — NEVER rewrites.
 
-    Runs before auth and before the LLM. The media is already on disk by now
-    (the Telegram adapter downloads it, and event.media_urls holds local paths).
+    This hook used to append a classification to the message so Elena would know what
+    she was looking at. We removed that, and the reason is worth recording.
 
-    CRITICAL: this executes on the gateway's asyncio EVENT LOOP (invoke_hook is
-    synchronous, called from `async def _handle_message`). Blocking here stalls the whole
-    gateway, so every classification is offloaded to a thread with a bounded wait. This
-    hook is advisory ONLY — if it gives up, nothing is lost but the annotation, and the
-    real gate (pre_tool_call, on a worker thread) still classifies before any upload.
+    Hermes already hands her the raw image natively (OpenAI, image_input_mode=auto), and
+    in testing she read a crumpled Hebrew receipt straight off the photo — merchant, tax
+    ID, VAT breakdown, total, "paid in cash" — while our classifier's entire contribution
+    would have been `kind=receipt confidence=0.98`. The annotation told her nothing she
+    could not already see, and it cost us a prompt-injection channel (a model reading an
+    attacker-influenceable image, re-emitting text into her context) and a rewrite of
+    `event.text` that had to dodge slash-command parsing.
+
+    So the model's job is now purely to ENFORCE, in pre_tool_call, where the agent cannot
+    argue with it. This hook exists only to start that classification early, so the gate
+    is warm (~0s) rather than cold (~5s) when the upload is actually attempted.
+
+    It runs on the gateway's asyncio EVENT LOOP, so it does exactly one stat() per image
+    and hands the real work to a worker thread. Nothing here may block.
+
+    (Caveat worth knowing: a message that arrives while Elena is BUSY is diverted to
+    _handle_active_session_busy_message and never reaches this hook at all, so the warm
+    never happens — see hermes-busy-mode.sh. Enforcement is unaffected: pre_tool_call
+    classifies on demand if the cache is cold.)
     """
     if not vg.ENABLED or event is None:
         return None
     try:
-        paths = [p for p in (getattr(event, "media_urls", None) or [])
-                 if isinstance(p, str)]
-        if not paths:
-            return None
-
-        verdicts = []
-        for path in paths:
+        for path in (getattr(event, "media_urls", None) or []):
+            if not isinstance(path, str):
+                continue
             if _ext(path) not in vg.IMAGE_EXT | vg.PDF_EXT:
                 continue
-            v = vg.lookup_by_path(path)   # stat() only — no read, no hash, no network
-            if v:
-                verdicts.append(v)
-            else:
-                vg.warm(path)             # classify in a worker; warms the upload gate
-
-        if not verdicts:
-            return None
-
-        text = event.text or ""
-        # The rewrite lands BEFORE slash-command parsing, and command recognition
-        # requires the text to start with "/" and parses the remainder as args
-        # (gateway/platforms/base.py:1813-1829). Appending to "/approve" would corrupt
-        # its arguments, so we leave command messages strictly alone. The verdicts are
-        # still cached, so the upload gate works regardless.
-        if text.lstrip().startswith("/"):
-            return None
-
-        annotated = (text + "\n\n" + vg.annotate(verdicts)).strip()
-        return {"action": "rewrite", "text": annotated}
+            if vg.lookup_by_path(path) is None:   # stat() only
+                vg.warm(path)
     except Exception:
-        log.exception("visiongate: pre_gateway_dispatch failed (message passes through)")
-        return None
+        log.exception("visiongate: pre-warm failed (harmless; the gate classifies on demand)")
+    return None                                   # never influences dispatch
 
 
 def pre_tool_call(tool_name: str = "", args=None, **_kw):

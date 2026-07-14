@@ -1,35 +1,37 @@
 """visiongate — a local vision guardrail on the expense-upload path.
 
-An inbound Telegram image is classified by a small vision model running LOCALLY on
-the Jetson (Ollama, qwen3-vl) before it can be uploaded to Morning as an expense.
-Two independent jobs, deliberately split:
+A small vision model running LOCALLY on the Jetson (Ollama, qwen3-vl) decides whether a
+file is really a tax document before it can be uploaded to Morning as a business expense.
 
-  1. `pre_gateway_dispatch` (see __init__.py) classifies inbound media BEFORE the LLM
-     turn and appends a short, sanitised annotation to the message. This is ADVISORY —
-     it tells Elena what she's looking at. It never blocks.
+The model has exactly ONE job: ENFORCEMENT, in `pre_tool_call`. If a file being passed to
+`gi_upload_expense_file` doesn't look like an invoice or receipt, the call escalates to
+Hermes' HUMAN approval prompt in Telegram, which the agent cannot bypass. There is no
+`force` argument on the tool, because anything the model can set is reachable by a prompt
+injection — which is the very thing this gate exists to stop. The only overrides are David
+answering the prompt, or an operator setting GI_VISIONGATE=0 in the environment.
 
-  2. `pre_tool_call` gates `gi_upload_expense_file`. A file that doesn't look like a
-     tax document escalates to Hermes' HUMAN approval prompt in Telegram. The LLM
-     cannot bypass that gate, and — critically — there is no `force` argument in the
-     tool schema, because any override the model can set reintroduces exactly the
-     prompt-injection path this gate exists to close. The only override is David
-     answering the prompt, or an operator setting GI_VISIONGATE=0 in the environment.
+`pre_gateway_dispatch` observes only: it pre-warms the classifier so the gate is fast. It
+never rewrites the message. An earlier version DID append a classification for Elena to
+read, and we removed it — see the note on that hook in hooks.py. In short: Hermes already
+hands her the raw image (OpenAI, image_input_mode=auto), and she reads a crumpled Hebrew
+receipt far better than our classifier can describe it, so the annotation told her nothing
+and cost us an injection channel.
 
-Elena (OpenAI, image_input_mode=auto) ALREADY sees inbound images natively. So this is
-not giving her eyes — it is an independent, deterministic second opinion that can
-enforce. Framing it as a perception upgrade would be a mistake.
+That is the frame to keep: this is a GUARDRAIL, not a perception upgrade. Elena can
+already see. What she cannot do is overrule this.
 
-TOCTOU: the gate hashes the file at `path` during pre_tool_call, but the upload handler
-opens and reads the file AGAIN afterwards. A rewrite in between would mean the bytes we
-classified are not the bytes we upload. So pre_tool_call CLEARS a content hash, and the
-handler re-hashes the exact buffer it is about to ship and requires it to be cleared.
-Bytes classified == bytes uploaded, or the upload is refused.
+INJECTION. The classifier reads an attacker-influenceable image, so its output is
+untrusted. The verdict schema therefore contains no free text at all — only closed enums
+and clamped numbers — and `is_tax_document` is DERIVED from the enum rather than trusting
+a model-supplied bool. Sanitising prose was tried and abandoned: you cannot strip an
+instruction out of a sentence, and a string the model extracted from an image is far
+easier for an LLM to obey than the same words buried in pixels.
 
-Injection: the classifier reads an attacker-influenceable image and its output is fed
-back into the LLM's context. Control flow therefore depends ONLY on an enum (`kind`),
-never on free text; the human-readable `note` is aggressively sanitised and is
-display-only. A model-extracted string is far easier for an LLM to obey than pixels, so
-"Elena sees the image anyway" is NOT a reason to relax this.
+TOCTOU. The gate hashes the file at `path`, but the upload handler opens and reads it
+AGAIN before shipping the bytes. A rewrite in between would mean we upload something
+nobody classified. So the gate CLEARS a content hash and the handler consumes that
+clearance against the exact buffer it sends: bytes classified == bytes uploaded, or the
+upload is refused.
 """
 
 from __future__ import annotations
@@ -40,7 +42,6 @@ import hashlib
 import json
 import logging
 import os
-import re
 import subprocess
 import tempfile
 import threading
@@ -404,23 +405,3 @@ def consume_clearance(digest: str) -> bool:
     with _lock:
         exp = _cleared.pop(digest, None)
     return exp is not None and exp >= time.time()
-
-
-def annotate(verdicts: list[dict]) -> str:
-    """A short, structured, deliberately boring annotation.
-
-    CLOSED ENUMS AND NUMBERS ONLY — no model-authored prose ever reaches this string.
-    Every value here is one we chose (from KINDS / the language set) or a clamped float,
-    so a crafted image has no field to smuggle an instruction through. Do not add a
-    free-text field to this without re-reading the note above PROMPT.
-    """
-    parts = []
-    for v in verdicts:
-        parts.append(
-            f"kind={v['kind']} "
-            f"tax_document={'yes' if v['is_tax_document'] else 'no'} "
-            f"confidence={v['confidence']:.2f} "
-            f"language={v['language']}"
-        )
-    return ("(visiongate: automated local image check, untrusted machine output. "
-            + " | ".join(parts) + ")")
