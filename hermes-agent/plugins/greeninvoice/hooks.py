@@ -1,15 +1,17 @@
 """visiongate hooks — the two Hermes extension points the guardrail hangs off.
 
-`pre_gateway_dispatch`  advisory: classify inbound media before the LLM turn, append a
-                        sanitised annotation. Never blocks.
-`pre_tool_call`         enforcing: gate gi_upload_expense_file. A file that doesn't look
-                        like a tax document escalates to the human approval prompt in
-                        Telegram, which the LLM cannot bypass.
+`pre_tool_call`         ENFORCING, and the only one that matters. Gates
+                        gi_upload_expense_file: a file that doesn't look like a tax
+                        document escalates to Hermes' human approval prompt in Telegram,
+                        which the agent cannot bypass.
+`pre_gateway_dispatch`  OBSERVING ONLY. Pre-warms the classifier so the gate is fast.
+                        Never rewrites the message (it used to append a classification
+                        for Elena; see the note on that function for why that's gone).
 
 Neither hook may raise. `model_tools.py` catches exceptions out of the pre_tool_call
 resolution path and PROCEEDS with the call (fail-open), so an exception here would
-silently disable the gate — the opposite of what it is for. Every entry point is
-wrapped.
+silently disable the gate — the exact opposite of what it exists for. Every entry point
+is wrapped, and the failure path escalates to a human rather than staying quiet.
 """
 
 from __future__ import annotations
@@ -23,6 +25,26 @@ from .handler import _read_upload_file
 log = logging.getLogger("hermes.plugins.greeninvoice.hooks")
 
 GATED_TOOLS = {"gi_upload_expense_file"}
+
+_announced = False
+
+
+def _announce_once() -> None:
+    """Prove the gate is live — from a HOOK CALL, not from registration.
+
+    We used to log this in register(), and it never appeared: plugin registration runs
+    before Hermes attaches its logging handlers, so startup-time lines are swallowed.
+    An operational check that can never fire is worse than none, because it reads as
+    "the gate is dead" every single time.
+
+    Logging on first invocation is also a strictly stronger claim: it proves the hook is
+    actually being CALLED, not merely that register() ran without raising.
+    """
+    global _announced
+    if _announced:
+        return
+    _announced = True
+    vg.audit("live model=%s observe=%s", vg.MODEL, vg.OBSERVE)
 
 
 def _ext(path: str) -> str:
@@ -57,6 +79,7 @@ def pre_gateway_dispatch(event=None, **_kw):
     """
     if not vg.ENABLED or event is None:
         return None
+    _announce_once()
     try:
         for path in (getattr(event, "media_urls", None) or []):
             if not isinstance(path, str):
@@ -84,6 +107,7 @@ def pre_tool_call(tool_name: str = "", args=None, **_kw):
     """
     if not vg.ENABLED or tool_name not in GATED_TOOLS:
         return None
+    _announce_once()
     try:
         path = (args or {}).get("path")
         if not isinstance(path, str) or not path:

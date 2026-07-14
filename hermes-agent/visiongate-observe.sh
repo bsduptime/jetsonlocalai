@@ -38,11 +38,8 @@ systemctl is-active --quiet hermes || { echo "hermes did not come back" >&2; exi
 
 echo "visiongate observe mode: $MODE"
 echo
-echo "Confirm the gate is live (this line is the ONLY proof the hooks registered —"
-echo "if they silently failed, uploads are REFUSED, not ungated):"
-echo
-journalctl -u hermes --since "1 min ago" --no-pager | grep "VISIONGATE" || \
-    echo "  !! no VISIONGATE line — the hooks did NOT register. Uploads will be refused."
-echo
-echo "Watch verdicts as you send images:"
+# The gate announces itself on its FIRST HOOK CALL, not at startup — plugin
+# registration runs before Hermes attaches its logging handlers, so anything logged
+# there is swallowed. So there is nothing to check until you send an image.
+echo "To confirm the gate is live, send Elena an image and watch for a verdict:"
 echo "  journalctl -u hermes -f | grep --line-buffered VISIONGATE"

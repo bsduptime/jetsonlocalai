@@ -46,8 +46,11 @@ def register(ctx) -> None:
         ctx.register_hook("pre_tool_call", hooks.pre_tool_call)
         # Deliberately loud: this box emits nothing at INFO, and "did the security gate
         # actually come up?" must be answerable from the journal.
-        visiongate.audit("hooks registered model=%s observe=%s",
-                         visiongate.MODEL, visiongate.OBSERVE)
+        # NOTE: do NOT try to log "registered" here — plugin registration runs before
+        # Hermes attaches its logging handlers, so anything logged at this point is
+        # swallowed. hooks._announce_once() emits the live line on the first hook call
+        # instead, which also proves the hook is actually being invoked.
+        log.info("visiongate: hooks registered (model=%s)", visiongate.MODEL)
         # Load the model now, in the background, so the first receipt after a restart
         # doesn't pay a cold load. Never blocks startup.
         visiongate.warm_model()

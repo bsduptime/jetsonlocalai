@@ -46,5 +46,6 @@ systemctl is-active --quiet hermes || { echo "hermes did not come back" >&2; exi
 
 echo "busy_input_mode = $MODE"
 echo
-journalctl -u hermes --since "1 min ago" --no-pager | grep "VISIONGATE hooks registered" \
-    || echo "  (visiongate line not flushed yet — it appears on the first image)"
+echo "visiongate announces itself on its first hook call (not at startup), so send an"
+echo "image to confirm it is live:"
+echo "  journalctl -u hermes -f | grep --line-buffered VISIONGATE"
