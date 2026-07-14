@@ -1,5 +1,22 @@
 """visiongate — a local vision guardrail on the expense-upload path.
 
+┌───────────────────────────────────────────────────────────────────────────────────┐
+│ PARKED / DE-PRIORITIZED (David, 2026-07-15). Disabled in production via              │
+│ GI_VISIONGATE=0 (see visiongate-standdown.sh). Code kept, not deleted.               │
+│                                                                                       │
+│ WHY: Elena already reads receipts BETTER than this local qwen3-vl classifier — she    │
+│ uses tesseract (the ocr-and-documents skill) plus her own reasoning, and got          │
+│ merchant / tax ID / VAT / total right on every real receipt. This gate second-guessed │
+│ a better reader with a weaker model, and building it meant duplicating a capability    │
+│ she already had. The broker's own safety (create-as-Open, never auto-report,          │
+│ confirm-gated close) already covers the original "mis-filed image" concern.           │
+│                                                                                       │
+│ The engineering here still works (4/4 Hebrew receipts at 0.98, injection-safe enum    │
+│ schema, TOCTOU-closed clearance, event-loop-safe). Revive only if the trust model     │
+│ changes — e.g. a shared group where non-David senders can drop images.                │
+└───────────────────────────────────────────────────────────────────────────────────┘
+
+
 A small vision model running LOCALLY on the Jetson (Ollama, qwen3-vl) decides whether a
 file is really a tax document before it can be uploaded to Morning as a business expense.
 
