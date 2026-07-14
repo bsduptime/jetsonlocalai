@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 
+from . import hooks, visiongate
 from .handler import HANDLERS
 from .schemas import ALL_SCHEMAS
 
@@ -32,3 +33,20 @@ def register(ctx) -> None:
     except Exception:
         log.exception("hermes-greeninvoice: failed to register tools")
         raise
+
+    # visiongate: a local vision model classifies inbound images before the LLM turn
+    # (advisory) and gates the expense upload (enforcing, escalates to a human).
+    # Registration failure here must NOT take the tools down — but it DOES leave the
+    # upload ungated, so say so loudly. GI_VISIONGATE=0 disables it deliberately.
+    if not visiongate.ENABLED:
+        log.warning("visiongate: DISABLED by GI_VISIONGATE=0 — expense uploads are ungated")
+        return
+    try:
+        ctx.register_hook("pre_gateway_dispatch", hooks.pre_gateway_dispatch)
+        ctx.register_hook("pre_tool_call", hooks.pre_tool_call)
+        log.info("visiongate: hooks registered (model=%s)", visiongate.MODEL)
+    except Exception:
+        log.exception(
+            "visiongate: FAILED to register hooks — expense uploads will be REFUSED "
+            "(the upload handler requires a clearance that only the gate can issue). "
+            "Set GI_VISIONGATE=0 to run without the gate.")

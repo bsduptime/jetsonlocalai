@@ -15,6 +15,7 @@ import os
 import stat
 
 from . import _client
+from . import visiongate as _vg
 
 # Local file read limit for uploads (matches the daemon default). Env-tunable.
 _MAX_UPLOAD_BYTES = int(os.environ.get("GI_UPLOAD_MAX_BYTES", str(10 * 1024 * 1024)))
@@ -154,6 +155,20 @@ def gi_upload_expense_file(args, **_kw) -> str:
         return json.dumps({"ok": False, "error": "invalid_input",
                            "reason": "file_unreadable", "op": "upload_expense_file",
                            "detail": type(e).__name__})
+
+    # visiongate: prove the bytes we are about to ship are the bytes that were
+    # classified and cleared. The gate (pre_tool_call) hashes the file at `path`, but we
+    # re-open and re-read it here — a rewrite in between would mean we upload something
+    # nobody ever looked at. So the clearance is keyed by CONTENT hash and consumed
+    # against this exact buffer. Closes the classify-time/upload-time TOCTOU.
+    if _vg.ENABLED and not _vg.consume_clearance(_vg.sha256(data)):
+        return json.dumps({
+            "ok": False, "error": "blocked", "reason": "visiongate_not_cleared",
+            "op": "upload_expense_file",
+            "detail": ("these exact file bytes were not cleared by the local image "
+                       "check (the file may have changed after it was checked)"),
+        })
+
     try:
         resp = _client.call_with_file(
             "upload_expense_file",

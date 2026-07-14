@@ -8,7 +8,7 @@ import os
 
 import pytest
 
-from hermes_gi_pkg import handler
+from hermes_gi_pkg import handler, visiongate
 
 
 def test_reads_allowlisted_file(_isolate_env):
@@ -67,6 +67,10 @@ def test_upload_handler_rejects_bad_path_json(_isolate_env):
 def test_upload_handler_daemon_unreachable_json(_isolate_env):
     f = _isolate_env / "media" / "r.pdf"
     f.write_bytes(b"%PDF")
+    # visiongate now requires these exact bytes to have been cleared by the gate before
+    # the handler will ship them (see test_visiongate.py). This test is about the
+    # daemon transport, so clear the content and let it through to the socket.
+    visiongate.clear_for_upload(visiongate.sha256(b"%PDF"))
     out = json.loads(handler.gi_upload_expense_file({"path": str(f)}))
     assert out["ok"] is False
     assert out["reason"] == "daemon_unreachable"
