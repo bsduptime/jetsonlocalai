@@ -306,3 +306,37 @@ def test_only_close_expense_can_report(load_cfg, monkeypatch):
                        get_client=lambda f=fake: f)
         for _method, path, _body, _idem in fake.calls:
             assert "/close" not in path, f"{op} unexpectedly hit {path}"
+
+
+def test_get_upload_url_sends_expense_context_query_params(load_cfg, monkeypatch):
+    """REGRESSION: the presigned-URL request must carry `context=expense` and a `data`
+    query param (URL-encoded JSON with source=5) — NOT a JSON body. Without context=expense
+    the gateway stores the file (S3 204) but never routes it to expense OCR, so no draft
+    ever appears. The original bug sent {"source":5} as a GET body with no context.
+
+    Earlier tests faked get_upload_url entirely, so they never exercised this — hence the
+    bug shipped. This spies on the REAL method.
+    """
+    import json as _json
+    from hermes_greeninvoice.apiclient import GreenInvoiceClient
+
+    monkeypatch.setenv("GI_API_KEY_ID", "test-id")
+    monkeypatch.setenv("GI_API_KEY_SECRET", "test-secret")
+    cfg = load_cfg()
+    client = GreenInvoiceClient(cfg)
+    seen = {}
+
+    def spy_request(method, path, *, body=None, params=None, idempotent=True, base_url=None):
+        seen.update(method=method, path=path, body=body, params=params, base_url=base_url)
+        return {"url": "https://s3.example/x", "fields": {}}
+
+    client.request = spy_request
+    client.get_upload_url()
+
+    assert seen["method"] == "GET"
+    assert seen["path"] == "/file-upload/v1/url"
+    assert seen["body"] is None, "must NOT send a body (GET bodies are dropped)"
+    assert seen["params"]["context"] == "expense"
+    assert _json.loads(seen["params"]["data"]) == {"source": 5}
+    # must go to the file-upload gateway host, not the JSON API host
+    assert seen["base_url"] == cfg.file_upload_base_url

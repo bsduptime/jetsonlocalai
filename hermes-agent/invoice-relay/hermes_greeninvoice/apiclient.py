@@ -237,12 +237,22 @@ class GreenInvoiceClient:
     # ---- expense file upload (presigned S3) ------------------------------
 
     def get_upload_url(self, *, source: int = 5) -> object:
-        """Step 1 of the expense file upload: an AUTHED GET (with a JSON body)
-        to the file-upload gateway, returning a presigned S3 POST
-        ({url, fields}). Lives on a different host from the JSON API."""
+        """Step 1 of the expense file upload: an AUTHED GET to the file-upload gateway,
+        returning a presigned S3 POST ({url, fields}). Lives on a different host from the
+        JSON API.
+
+        CRITICAL: the routing to EXPENSE OCR is baked into the presigned URL at THIS step,
+        via two QUERY PARAMS — `context=expense` and `data` (URL-encoded JSON). It is NOT a
+        request body and there is no later "commit" call. A GET body is dropped by the
+        gateway, and without `context=expense` the object is merely STORED (S3 returns 204)
+        and never handed to OCR, so no draft is ever created. That was the original bug:
+        we sent `{"source":5}` as a body with no context, the upload "succeeded", and the
+        draft never appeared. `source=5` ("API upload") stays mandatory; it goes inside
+        `data`."""
         return self.request(
             "GET", "/file-upload/v1/url",
-            body={"source": source},
+            params={"context": "expense",
+                    "data": json.dumps({"source": source}, separators=(",", ":"))},
             base_url=self.cfg.file_upload_base_url,
             idempotent=True,
         )
